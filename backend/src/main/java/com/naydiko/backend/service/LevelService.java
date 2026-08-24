@@ -31,8 +31,8 @@ public class LevelService {
     }
 
     @Transactional
-    public LevelResponse createLevel(CreateLevelRequest request) {
-        Project project = findProjectOrThrow(request.projectId());
+    public LevelResponse createLevel(UUID projectId, CreateLevelRequest request) {
+        Project project = findProjectOrThrow(projectId);
 
         Level level = Level.builder()
                 .project(project)

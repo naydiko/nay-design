@@ -98,8 +98,18 @@ public class ProductService {
         return toResponse(findProductOrThrow(id));
     }
 
-    public List<ProductResponse> listProductsByVendor(UUID vendorId) {
-        return productRepository.findByVendorId(vendorId).stream()
+    /**
+     * Lists products, optionally filtered by vendor.
+     * The optional {@code vendorId} keeps this method's signature stable so
+     * additional filters (category, status, search, pagination, etc.) can be
+     * introduced later without breaking the existing API contract.
+     */
+    public List<ProductResponse> listProducts(UUID vendorId) {
+        List<Product> products = vendorId != null
+                ? productRepository.findByVendorId(vendorId)
+                : productRepository.findAll();
+
+        return products.stream()
                 .map(ProductService::toResponse)
                 .toList();
     }

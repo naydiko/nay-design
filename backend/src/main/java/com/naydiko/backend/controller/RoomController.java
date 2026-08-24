@@ -1,7 +1,9 @@
 package com.naydiko.backend.controller;
 
 import com.naydiko.backend.dto.request.CreateRoomRequest;
+import com.naydiko.backend.dto.request.FurniturePlacementRequest;
 import com.naydiko.backend.dto.request.UpdateRoomRequest;
+import com.naydiko.backend.dto.response.FurniturePlacementResponse;
 import com.naydiko.backend.dto.response.RoomResponse;
 import com.naydiko.backend.service.RoomService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -11,12 +13,11 @@ import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.net.URI;
@@ -24,11 +25,10 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * REST API for managing rooms within a level.
+ * REST API for managing rooms within a level, including their furniture layout.
  */
 @Tag(name = "Rooms")
 @RestController
-@RequestMapping("/api/rooms")
 public class RoomController {
 
     private final RoomService roomService;
@@ -37,28 +37,30 @@ public class RoomController {
         this.roomService = roomService;
     }
 
-    @Operation(summary = "Create a new room")
-    @PostMapping
-    public ResponseEntity<RoomResponse> createRoom(@Valid @RequestBody CreateRoomRequest request) {
-        RoomResponse response = roomService.createRoom(request);
+    @Operation(summary = "Create a new room within a level")
+    @PostMapping("/api/levels/{levelId}/rooms")
+    public ResponseEntity<RoomResponse> createRoom(
+            @Parameter(description = "Level id") @PathVariable UUID levelId,
+            @Valid @RequestBody CreateRoomRequest request) {
+        RoomResponse response = roomService.createRoom(levelId, request);
         return ResponseEntity.created(URI.create("/api/rooms/" + response.id())).body(response);
     }
 
+    @Operation(summary = "List rooms belonging to a given level")
+    @GetMapping("/api/levels/{levelId}/rooms")
+    public ResponseEntity<List<RoomResponse>> listRooms(
+            @Parameter(description = "Level id") @PathVariable UUID levelId) {
+        return ResponseEntity.ok(roomService.listRoomsByLevel(levelId));
+    }
+
     @Operation(summary = "Get a room by id")
-    @GetMapping("/{id}")
+    @GetMapping("/api/rooms/{id}")
     public ResponseEntity<RoomResponse> getRoom(@Parameter(description = "Room id") @PathVariable UUID id) {
         return ResponseEntity.ok(roomService.getRoom(id));
     }
 
-    @Operation(summary = "List rooms belonging to a given level")
-    @GetMapping
-    public ResponseEntity<List<RoomResponse>> listRooms(
-            @Parameter(description = "Level id", required = true) @RequestParam UUID levelId) {
-        return ResponseEntity.ok(roomService.listRoomsByLevel(levelId));
-    }
-
     @Operation(summary = "Update an existing room")
-    @PutMapping("/{id}")
+    @PatchMapping("/api/rooms/{id}")
     public ResponseEntity<RoomResponse> updateRoom(
             @Parameter(description = "Room id") @PathVariable UUID id,
             @Valid @RequestBody UpdateRoomRequest request) {
@@ -66,10 +68,25 @@ public class RoomController {
     }
 
     @Operation(summary = "Delete a room")
-    @DeleteMapping("/{id}")
+    @DeleteMapping("/api/rooms/{id}")
     public ResponseEntity<Void> deleteRoom(@Parameter(description = "Room id") @PathVariable UUID id) {
         roomService.deleteRoom(id);
         return ResponseEntity.noContent().build();
+    }
+
+    @Operation(summary = "Get the current furniture layout of a room")
+    @GetMapping("/api/rooms/{roomId}/placements")
+    public ResponseEntity<List<FurniturePlacementResponse>> getPlacements(
+            @Parameter(description = "Room id") @PathVariable UUID roomId) {
+        return ResponseEntity.ok(roomService.getPlacements(roomId));
+    }
+
+    @Operation(summary = "Save (replace) the current furniture layout of a room")
+    @PutMapping("/api/rooms/{roomId}/placements")
+    public ResponseEntity<List<FurniturePlacementResponse>> savePlacements(
+            @Parameter(description = "Room id") @PathVariable UUID roomId,
+            @Valid @RequestBody List<FurniturePlacementRequest> placements) {
+        return ResponseEntity.ok(roomService.savePlacements(roomId, placements));
     }
 }
 

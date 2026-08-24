@@ -53,12 +53,6 @@ public class UserService {
         user.setFirstName(request.firstName());
         user.setLastName(request.lastName());
         user.setPhoneNumber(request.phoneNumber());
-        if (request.role() != null) {
-            user.setRole(request.role());
-        }
-        if (request.status() != null) {
-            user.setStatus(request.status());
-        }
 
         return toResponse(user);
     }

@@ -8,13 +8,12 @@ import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
 
 import java.math.BigDecimal;
-import java.util.UUID;
 
 /**
  * Payload for creating a new room within a level.
+ * The owning level is identified via the {@code /api/levels/{levelId}/rooms} path.
  */
 public record CreateRoomRequest(
-        @NotNull UUID levelId,
         @NotBlank @Size(max = 160) String name,
         @NotNull RoomType type,
         @Size(max = 120) String floorFinish,
