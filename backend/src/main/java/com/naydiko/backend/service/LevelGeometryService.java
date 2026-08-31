@@ -97,7 +97,9 @@ public class LevelGeometryService {
         List<Node> nodes = nodeRepository.findByLevelId(levelId);
         List<Wall> walls = wallRepository.findByLevelId(levelId);
         List<Opening> openings = openingRepository.findByWallLevelId(levelId);
-        List<Room> rooms = roomRepository.findByLevelId(levelId);
+        // Fetch-joined: roomWalls below reads every room's `walls`
+        // collection, which would otherwise be one extra query per room.
+        List<Room> rooms = roomRepository.findByLevelIdFetchingWalls(levelId);
 
         List<RoomWallResponse> roomWalls = rooms.stream()
                 .flatMap(room -> room.getWalls().stream()
