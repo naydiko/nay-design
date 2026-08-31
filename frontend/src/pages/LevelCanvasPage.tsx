@@ -18,12 +18,14 @@ import {
 import { Link, useParams } from "react-router-dom";
 import { LevelApi } from "../api/endpoints";
 import type {
+  GeometryIssue,
   LevelGeometryRequest,
   LevelGeometryResponse,
   LevelResponse,
   OpeningType,
   WallKind,
 } from "../api/types";
+import ValidationPanel from "../components/ValidationPanel";
 import {
   fitView,
   formatLength,
@@ -134,7 +136,7 @@ export default function LevelCanvasPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
-  const [warnings, setWarnings] = useState<string[]>([]);
+  const [warnings, setWarnings] = useState<GeometryIssue[]>([]);
 
   const [view, setView] = useState<ViewTransform>({ zoom: 1, panXPx: 0, panYPx: 0 });
   const [snapEnabled, setSnapEnabled] = useState(true);
@@ -710,9 +712,14 @@ export default function LevelCanvasPage() {
       setFuture([]);
       setSelected(null);
       setStatus("Saved");
-      setWarnings(finalResponse.warnings ?? []);
+      setWarnings(finalResponse.issues ?? []);
     } catch (err) {
-      setError((err as { message?: string }).message ?? "Failed to save geometry");
+      const apiErr = err as { message?: string; issues?: GeometryIssue[] };
+      setError(apiErr.message ?? "Failed to save geometry");
+      // Structural (ERROR-severity) findings that made the backend reject
+      // the save — surfaced the same way as post-save warnings so they can
+      // be inspected/highlighted, even though nothing was persisted.
+      setWarnings(apiErr.issues ?? []);
     } finally {
       setSaving(false);
     }
@@ -746,6 +753,40 @@ export default function LevelCanvasPage() {
       widthMm: o.widthMm,
       heightMm: o.heightMm,
     };
+  }
+
+  // ---- Validation issue highlighting/selection ----
+  // Maps each entity's server id to the worst-severity issue that concerns
+  // it, so the canvas can highlight offending nodes/walls/openings without
+  // re-deriving anything the Geometry Engine already computed.
+  const issuesByEntityId = useMemo(() => {
+    const map = new Map<string, GeometryIssue>();
+    for (const issue of warnings) {
+      if (!issue.relatedEntityId) continue;
+      const existing = map.get(issue.relatedEntityId);
+      if (!existing || (existing.severity !== "ERROR" && issue.severity === "ERROR")) {
+        map.set(issue.relatedEntityId, issue);
+      }
+    }
+    return map;
+  }, [warnings]);
+
+  function selectIssue(issue: GeometryIssue) {
+    if (!issue.relatedEntityId) return;
+    const node = state.nodes.find((n) => n.serverId === issue.relatedEntityId);
+    if (node) {
+      setSelected({ type: "node", clientId: node.clientId });
+      return;
+    }
+    const wall = state.walls.find((w) => w.serverId === issue.relatedEntityId);
+    if (wall) {
+      setSelected({ type: "wall", clientId: wall.clientId });
+      return;
+    }
+    const opening = state.openings.find((o) => o.serverId === issue.relatedEntityId);
+    if (opening) {
+      setSelected({ type: "opening", clientId: opening.clientId });
+    }
   }
 
   // ---- Rendering ----
@@ -796,7 +837,14 @@ export default function LevelCanvasPage() {
       const sp = toPx(start.xMm, start.yMm);
       const ep = toPx(end.xMm, end.yMm);
       const isSelected = selected?.type === "wall" && selected.clientId === w.clientId;
-      ctx.strokeStyle = isSelected ? "#2563eb" : "#333";
+      const issue = w.serverId ? issuesByEntityId.get(w.serverId) : undefined;
+      ctx.strokeStyle = isSelected
+        ? "#2563eb"
+        : issue?.severity === "ERROR"
+          ? "#dc2626"
+          : issue
+            ? "#d97706"
+            : "#333";
       ctx.lineWidth = Math.max(2, w.thicknessMm * scale);
       ctx.beginPath();
       ctx.moveTo(sp.x, sp.y);
@@ -826,7 +874,16 @@ export default function LevelCanvasPage() {
       const hx1 = sp.x + (ep.x - sp.x) * t1;
       const hy1 = sp.y + (ep.y - sp.y) * t1;
       const isSelected = selected?.type === "opening" && selected.clientId === o.clientId;
-      ctx.strokeStyle = isSelected ? "#2563eb" : o.type === "DOOR" ? "#a0522d" : "#3b82f6";
+      const issue = o.serverId ? issuesByEntityId.get(o.serverId) : undefined;
+      ctx.strokeStyle = isSelected
+        ? "#2563eb"
+        : issue?.severity === "ERROR"
+          ? "#dc2626"
+          : issue
+            ? "#d97706"
+            : o.type === "DOOR"
+              ? "#a0522d"
+              : "#3b82f6";
       ctx.lineWidth = Math.max(4, wall.thicknessMm * scale + 2);
       ctx.beginPath();
       ctx.moveTo(hx0, hy0);
@@ -838,8 +895,9 @@ export default function LevelCanvasPage() {
     for (const n of state.nodes) {
       const p = toPx(n.xMm, n.yMm);
       const isSelected = selected?.type === "node" && selected.clientId === n.clientId;
-      if (isSelected) {
-        ctx.strokeStyle = "#2563eb";
+      const issue = n.serverId ? issuesByEntityId.get(n.serverId) : undefined;
+      if (isSelected || issue) {
+        ctx.strokeStyle = isSelected ? "#2563eb" : issue!.severity === "ERROR" ? "#dc2626" : "#d97706";
         ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
@@ -871,7 +929,7 @@ export default function LevelCanvasPage() {
         ctx.fillText(formatLength(previewLenMm, unit), (sp.x + ep.x) / 2 + 6, (sp.y + ep.y) / 2 - 6);
       }
     }
-  }, [state, selected, tool, wallDrawStart, previewMm, view, unit, scale, toPx]);
+  }, [state, selected, tool, wallDrawStart, previewMm, view, unit, scale, toPx, issuesByEntityId]);
 
   const selectedNode = useMemo(
     () => (selected?.type === "node" ? state.nodes.find((n) => n.clientId === selected.clientId) : null),
@@ -961,16 +1019,7 @@ export default function LevelCanvasPage() {
       </div>
 
       {error && <div className="error">{error}</div>}
-      {warnings.length > 0 && (
-        <div className="warning-banner">
-          <strong>Saved with warnings:</strong>
-          <ul>
-            {warnings.map((w, i) => (
-              <li key={i}>{w}</li>
-            ))}
-          </ul>
-        </div>
-      )}
+      <ValidationPanel title="Geometry validation" issues={warnings} onSelect={selectIssue} />
 
       <div className="canvas-layout">
         <canvas

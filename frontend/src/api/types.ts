@@ -192,7 +192,37 @@ export interface LevelGeometryResponse {
   rooms: (RoomGeometryDto & { id: UUID })[];
   roomWalls: RoomWallDto[];
   /** Non-blocking Geometry Engine findings from the most recent save (e.g. a room not yet closed). Absent on plain reads. */
-  warnings?: string[];
+  issues?: GeometryIssue[];
+}
+
+// ---- Geometry Engine validation ----
+// Mirrors com.naydiko.backend.geometry.model.GeometrySeverity / GeometryIssueCode.
+export type GeometrySeverity = "ERROR" | "WARNING" | "INFO";
+
+export type GeometryIssueCode =
+  | "WALL_INVALID_NODES"
+  | "WALL_ZERO_LENGTH"
+  | "WALL_NON_POSITIVE_THICKNESS"
+  | "WALL_NON_POSITIVE_HEIGHT"
+  | "OPENING_MISSING_WALL"
+  | "OPENING_NON_POSITIVE_WIDTH"
+  | "OPENING_NON_POSITIVE_HEIGHT"
+  | "OPENING_INVALID_OFFSET"
+  | "OPENING_OUT_OF_BOUNDS"
+  | "ROOM_NOT_CLOSED"
+  | "FURNITURE_MISSING_PRODUCT"
+  | "FURNITURE_MISSING_DIMENSIONS"
+  | "FURNITURE_OUTSIDE_ROOM"
+  | "FURNITURE_INTERSECTS_WALL"
+  | "FURNITURE_INTERSECTS_FURNITURE"
+  | "DOOR_BLOCKED";
+
+/** A single Geometry Engine finding, as returned by the backend. */
+export interface GeometryIssue {
+  severity: GeometrySeverity;
+  code: GeometryIssueCode;
+  message: string;
+  relatedEntityId?: UUID | null;
 }
 
 export interface ApiFieldError {
@@ -205,6 +235,8 @@ export interface ApiError {
   status?: number;
   /** Field-level details (bean validation errors, or Geometry Engine issues: field = issue code). */
   fieldErrors?: ApiFieldError[];
+  /** Structured Geometry Engine findings, populated when a save was rejected for structural errors. */
+  issues?: GeometryIssue[];
 }
 
 // ---- Rooms ----
@@ -298,5 +330,11 @@ export interface FurniturePlacementResponse {
   locked: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Response body for PUT /api/rooms/{roomId}/placements. */
+export interface RoomPlacementsSaveResponse {
+  placements: FurniturePlacementResponse[];
+  issues: GeometryIssue[];
 }
 

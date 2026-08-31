@@ -1,5 +1,6 @@
 package com.naydiko.backend.exception;
 
+import com.naydiko.backend.dto.response.GeometryIssueResponse;
 import jakarta.persistence.EntityNotFoundException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ValidationException;
@@ -49,18 +50,22 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleGeometryValidation(
             GeometryValidationException ex, HttpServletRequest request) {
 
-        List<ErrorResponse.FieldError> issues = ex.getIssues().stream()
+        List<ErrorResponse.FieldError> fieldErrors = ex.getIssues().stream()
                 .map(issue -> new ErrorResponse.FieldError(
                         issue.code().name(),
                         issue.severity() + ": " + issue.message()
                                 + (issue.relatedEntityId() != null ? " (entity: " + issue.relatedEntityId() + ")" : "")))
                 .toList();
+        List<GeometryIssueResponse> issues = ex.getIssues().stream()
+                .map(GeometryIssueResponse::from)
+                .toList();
 
-        ErrorResponse body = ErrorResponse.of(
+        ErrorResponse body = ErrorResponse.ofGeometryIssues(
                 HttpStatus.BAD_REQUEST.value(),
                 HttpStatus.BAD_REQUEST.getReasonPhrase(),
                 "Geometry validation failed",
                 request.getRequestURI(),
+                fieldErrors,
                 issues
         );
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);

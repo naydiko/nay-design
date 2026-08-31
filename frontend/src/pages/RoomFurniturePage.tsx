@@ -18,10 +18,12 @@ import { Link, useParams } from "react-router-dom";
 import { ProductApi, RoomApi, VendorApi } from "../api/endpoints";
 import type {
   FurniturePlacementRequest,
+  GeometryIssue,
   ProductResponse,
   RoomResponse,
   VendorResponse,
 } from "../api/types";
+import ValidationPanel from "../components/ValidationPanel";
 import {
   fitView,
   formatLength,
@@ -108,7 +110,7 @@ export default function RoomFurniturePage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
-  const [warnings, setWarnings] = useState<string[]>([]);
+  const [warnings, setWarnings] = useState<GeometryIssue[]>([]);
 
   const [view, setView] = useState<ViewTransform>({ zoom: 1, panXPx: 0, panYPx: 0 });
   const [snapEnabled, setSnapEnabled] = useState(true);
@@ -460,10 +462,7 @@ export default function RoomFurniturePage() {
         scale: p.scale,
         locked: p.locked,
       }));
-      const { placements: response, warnings: geometryWarnings } = await RoomApi.savePlacements(
-        roomId,
-        body
-      );
+      const { placements: response, issues } = await RoomApi.savePlacements(roomId, body);
       const productById = new Map(products.map((prod) => [prod.id, prod]));
       // Re-fetch any products referenced by the response but missing from the
       // currently-filtered catalog list (e.g. filtered out by category).
@@ -490,12 +489,33 @@ export default function RoomFurniturePage() {
       setFuture([]);
       setSelectedId(null);
       setStatus("Saved");
-      setWarnings(geometryWarnings);
+      setWarnings(issues);
     } catch (err) {
-      setError((err as { message?: string }).message ?? "Failed to save furniture layout");
+      const apiErr = err as { message?: string; issues?: GeometryIssue[] };
+      setError(apiErr.message ?? "Failed to save furniture layout");
+      setWarnings(apiErr.issues ?? []);
     } finally {
       setSaving(false);
     }
+  }
+
+  // ---- Validation issue highlighting/selection ----
+  const issuesByPlacementId = useMemo(() => {
+    const map = new Map<string, GeometryIssue>();
+    for (const issue of warnings) {
+      if (!issue.relatedEntityId) continue;
+      const existing = map.get(issue.relatedEntityId);
+      if (!existing || (existing.severity !== "ERROR" && issue.severity === "ERROR")) {
+        map.set(issue.relatedEntityId, issue);
+      }
+    }
+    return map;
+  }, [warnings]);
+
+  function selectIssue(issue: GeometryIssue) {
+    if (!issue.relatedEntityId) return;
+    const placement = placements.find((p) => p.serverId === issue.relatedEntityId);
+    if (placement) setSelectedId(placement.clientId);
   }
 
   // ---- Rendering ----
@@ -543,12 +563,23 @@ export default function RoomFurniturePage() {
       const wPx = w * scale;
       const dPx = d * scale;
       const isSelected = selectedId === p.clientId;
+      const issue = p.serverId ? issuesByPlacementId.get(p.serverId) : undefined;
 
       if (isSelected) {
         ctx.save();
         ctx.translate(center.x, center.y);
         ctx.rotate((p.rotationAngle * Math.PI) / 180);
         ctx.strokeStyle = "#2563eb";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([4, 3]);
+        ctx.strokeRect(-wPx / 2 - 4, -dPx / 2 - 4, wPx + 8, dPx + 8);
+        ctx.setLineDash([]);
+        ctx.restore();
+      } else if (issue) {
+        ctx.save();
+        ctx.translate(center.x, center.y);
+        ctx.rotate((p.rotationAngle * Math.PI) / 180);
+        ctx.strokeStyle = issue.severity === "ERROR" ? "#dc2626" : "#d97706";
         ctx.lineWidth = 2;
         ctx.setLineDash([4, 3]);
         ctx.strokeRect(-wPx / 2 - 4, -dPx / 2 - 4, wPx + 8, dPx + 8);
@@ -587,7 +618,7 @@ export default function RoomFurniturePage() {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [placements, selectedId, view, scale, toPx]);
+  }, [placements, selectedId, view, scale, toPx, issuesByPlacementId]);
 
   const selected = placements.find((p) => p.clientId === selectedId) ?? null;
   const selectedDims = useMemo(() => (selected ? dims(selected) : null), [selected]);
@@ -636,16 +667,7 @@ export default function RoomFurniturePage() {
       </div>
 
       {error && <div className="error">{error}</div>}
-      {warnings.length > 0 && (
-        <div className="warning-banner">
-          <strong>Layout saved with warnings:</strong>
-          <ul>
-            {warnings.map((w, i) => (
-              <li key={i}>{w}</li>
-            ))}
-          </ul>
-        </div>
-      )}
+      <ValidationPanel title="Layout validation" issues={warnings} onSelect={selectIssue} />
 
       <div className="room-layout">
         <aside className="catalog-panel">

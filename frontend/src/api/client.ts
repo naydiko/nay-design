@@ -82,12 +82,14 @@ async function requestWithResponse<T>(
     }
 
     const fieldErrors: ApiFieldError[] | undefined = data?.fieldErrors;
+    const issues: ApiError["issues"] = data?.issues;
     const baseMessage: string =
       (data && (data.message || data.error)) || `Request failed with status ${response.status}`;
     throw {
       message: buildMessage(baseMessage, fieldErrors),
       status: response.status,
       fieldErrors,
+      issues,
     } satisfies ApiError;
   }
 
@@ -103,8 +105,5 @@ export const api = {
   patch: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: "PATCH", body: body ? JSON.stringify(body) : undefined }),
   delete: <T>(path: string) => request<T>(path, { method: "DELETE" }),
-  /** Like `put`, but also returns response headers (used to read X-Geometry-Warnings). */
-  putWithHeaders: <T>(path: string, body?: unknown) =>
-    requestWithResponse<T>(path, { method: "PUT", body: body ? JSON.stringify(body) : undefined }),
 };
 

@@ -14,6 +14,7 @@ import type {
   ProductResponse,
   ProjectResponse,
   RegisterRequest,
+  RoomPlacementsSaveResponse,
   RoomResponse,
   UpdateLevelRequest,
   UpdateProjectRequest,
@@ -66,21 +67,11 @@ export const RoomApi = {
   /**
    * Saves the complete furniture layout. Also surfaces any non-blocking
    * Geometry Engine findings (furniture outside the room, overlapping
-   * walls/furniture, blocked doors) returned via the X-Geometry-Warnings
-   * response header — the save itself is never rejected for these.
+   * walls/furniture, blocked doors) via the response body's `issues` —
+   * the save itself is never rejected for these.
    */
-  savePlacements: async (
-    roomId: UUID,
-    body: FurniturePlacementRequest[]
-  ): Promise<{ placements: FurniturePlacementResponse[]; warnings: string[] }> => {
-    const { data, response } = await api.putWithHeaders<FurniturePlacementResponse[]>(
-      `/api/rooms/${roomId}/placements`,
-      body
-    );
-    const header = response.headers.get("X-Geometry-Warnings");
-    const warnings = header ? header.split(" | ").filter(Boolean) : [];
-    return { placements: data, warnings };
-  },
+  savePlacements: (roomId: UUID, body: FurniturePlacementRequest[]) =>
+    api.put<RoomPlacementsSaveResponse>(`/api/rooms/${roomId}/placements`, body),
 };
 
 export const ProductApi = {

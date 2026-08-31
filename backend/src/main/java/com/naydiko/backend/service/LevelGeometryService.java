@@ -16,6 +16,7 @@ import com.naydiko.backend.dto.request.OpeningRequest;
 import com.naydiko.backend.dto.request.RoomGeometryRequest;
 import com.naydiko.backend.dto.request.RoomWallRequest;
 import com.naydiko.backend.dto.request.WallRequest;
+import com.naydiko.backend.dto.response.GeometryIssueResponse;
 import com.naydiko.backend.dto.response.LevelGeometryResponse;
 import com.naydiko.backend.dto.response.NodeResponse;
 import com.naydiko.backend.dto.response.OpeningResponse;
@@ -90,7 +91,7 @@ public class LevelGeometryService {
         return buildGeometryResponse(levelId, null);
     }
 
-    private LevelGeometryResponse buildGeometryResponse(UUID levelId, List<String> warnings) {
+    private LevelGeometryResponse buildGeometryResponse(UUID levelId, List<GeometryIssueResponse> issues) {
         findLevelOrThrow(levelId);
 
         List<Node> nodes = nodeRepository.findByLevelId(levelId);
@@ -110,7 +111,7 @@ public class LevelGeometryService {
                 openings.stream().map(LevelGeometryService::toOpeningResponse).toList(),
                 rooms.stream().map(LevelGeometryService::toRoomResponse).toList(),
                 roomWalls,
-                warnings
+                issues
         );
     }
 
@@ -260,10 +261,10 @@ public class LevelGeometryService {
         nodeRepository.deleteAll(nodesToRemove);
         nodeRepository.flush();
 
-        List<String> warningMessages = warnings.stream()
-                .map(i -> i.code() + ": " + i.message())
+        List<GeometryIssueResponse> issueResponses = warnings.stream()
+                .map(GeometryIssueResponse::from)
                 .toList();
-        return buildGeometryResponse(levelId, warningMessages);
+        return buildGeometryResponse(levelId, issueResponses);
     }
 
     /**

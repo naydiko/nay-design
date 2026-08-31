@@ -4,6 +4,8 @@ import com.naydiko.backend.dto.request.CreateRoomRequest;
 import com.naydiko.backend.dto.request.FurniturePlacementRequest;
 import com.naydiko.backend.dto.request.UpdateRoomRequest;
 import com.naydiko.backend.dto.response.FurniturePlacementResponse;
+import com.naydiko.backend.dto.response.GeometryIssueResponse;
+import com.naydiko.backend.dto.response.RoomPlacementsSaveResponse;
 import com.naydiko.backend.dto.response.RoomResponse;
 import com.naydiko.backend.service.RoomService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -83,24 +85,20 @@ public class RoomController {
 
     @Operation(summary = "Save (replace) the current furniture layout of a room")
     @PutMapping("/api/rooms/{roomId}/placements")
-    public ResponseEntity<List<FurniturePlacementResponse>> savePlacements(
+    public ResponseEntity<RoomPlacementsSaveResponse> savePlacements(
             @Parameter(description = "Room id") @PathVariable UUID roomId,
             @Valid @RequestBody List<FurniturePlacementRequest> placements) {
         RoomService.PlacementsSaveResult result = roomService.savePlacementsWithWarnings(roomId, placements);
 
-        ResponseEntity.BodyBuilder response = ResponseEntity.ok();
-        if (!result.warnings().isEmpty()) {
-            // Non-blocking Geometry Engine findings (e.g. furniture outside
-            // the room, overlapping walls/furniture, or blocking a door).
-            // Kept out of the JSON body to preserve the existing List<...>
-            // response contract; exposed via a header instead (see
-            // SecurityConfig's CORS exposedHeaders).
-            String encoded = result.warnings().stream()
-                    .map(issue -> issue.code() + ": " + issue.message().replace("\n", " "))
-                    .collect(java.util.stream.Collectors.joining(" | "));
-            response.header("X-Geometry-Warnings", encoded);
-        }
-        return response.body(result.placements());
+        // Non-blocking Geometry Engine findings (e.g. furniture outside the
+        // room, overlapping walls/furniture, or blocking a door) surfaced in
+        // the JSON body with full severity/code/related-entity detail, so
+        // the frontend can render human-readable messages and highlight the
+        // offending furniture. Stage 1 never rejects a save for these.
+        List<GeometryIssueResponse> issues = result.warnings().stream()
+                .map(GeometryIssueResponse::from)
+                .toList();
+        return ResponseEntity.ok(new RoomPlacementsSaveResponse(result.placements(), issues));
     }
 }
 
