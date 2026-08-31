@@ -2,11 +2,19 @@
 // single Level, with local-only editing (undo/redo) and explicit Save/Load
 // against PUT/GET /api/levels/{levelId}/geometry.
 //
-// Geometry is kept in millimetres (matching the backend model) and rendered
-// at a fixed px-per-mm scale. Local entities use a stable `clientId` for
-// internal references; `serverId` is null until the entity has been
-// persisted at least once.
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+// Geometry is kept in millimetres (matching the backend model). Screen
+// pixels are derived from mm via a pan/zoom ViewTransform (see
+// ../canvas/canvasView.ts) — the geometry itself never stores pixels.
+// Local entities use a stable `clientId` for internal references;
+// `serverId` is null until the entity has been persisted at least once.
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { Link, useParams } from "react-router-dom";
 import { LevelApi } from "../api/endpoints";
 import type {
@@ -16,6 +24,16 @@ import type {
   OpeningType,
   WallKind,
 } from "../api/types";
+import {
+  fitView,
+  formatLength,
+  gridStepMm,
+  makeToMm,
+  makeToPx,
+  snapToGrid,
+  zoomAt,
+  type ViewTransform,
+} from "../canvas/canvasView";
 
 // ---- Local geometry model ----
 interface LocalNode {
@@ -49,16 +67,18 @@ interface GeometryState {
   openings: LocalOpening[];
 }
 
-type Tool = "select" | "wall" | "door" | "window" | "delete";
+type Tool = "select" | "pan" | "wall" | "door" | "window" | "delete";
 type Selection =
   | { type: "node"; clientId: string }
   | { type: "wall"; clientId: string }
   | { type: "opening"; clientId: string }
   | null;
+type LengthUnit = "mm" | "m";
 
-const PX_PER_MM = 0.15;
+const BASE_PX_PER_MM = 0.15;
 const NODE_HIT_PX = 9;
 const WALL_HIT_PX = 10;
+const SNAP_GRID_MM = 50;
 const DEFAULT_WALL_THICKNESS_MM = 150;
 const DEFAULT_WALL_HEIGHT_MM = 2700;
 const DEFAULT_DOOR_WIDTH_MM = 900;
@@ -70,17 +90,15 @@ const CANVAS_H = 700;
 const ORIGIN_X = CANVAS_W / 2;
 const ORIGIN_Y = CANVAS_H / 2;
 
-function toPx(xMm: number, yMm: number) {
-  return { x: ORIGIN_X + xMm * PX_PER_MM, y: ORIGIN_Y + yMm * PX_PER_MM };
-}
-function toMm(xPx: number, yPx: number) {
-  return { xMm: (xPx - ORIGIN_X) / PX_PER_MM, yMm: (yPx - ORIGIN_Y) / PX_PER_MM };
-}
 function dist(ax: number, ay: number, bx: number, by: number) {
   return Math.hypot(ax - bx, ay - by);
 }
 function newId() {
   return crypto.randomUUID();
+}
+function isTypingTarget(target: EventTarget | null) {
+  const el = target as HTMLElement | null;
+  return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
 }
 
 /** Projects point p onto segment ab, returning the clamped t in [0,1], the
@@ -118,13 +136,29 @@ export default function LevelCanvasPage() {
   const [status, setStatus] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
 
+  const [view, setView] = useState<ViewTransform>({ zoom: 1, panXPx: 0, panYPx: 0 });
+  const [snapEnabled, setSnapEnabled] = useState(true);
+  const [unit, setUnit] = useState<LengthUnit>("mm");
+  const [spacePanning, setSpacePanning] = useState(false);
+
   const dragRef = useRef<{
     kind: "node" | "opening";
     clientId: string;
     beforeState: GeometryState;
   } | null>(null);
+  const panRef = useRef<{ startXPx: number; startYPx: number; startPan: ViewTransform } | null>(null);
 
   const dirty = past.length > 0;
+
+  const toPx = useCallback(
+    (xMm: number, yMm: number) => makeToPx(BASE_PX_PER_MM, view, ORIGIN_X, ORIGIN_Y)(xMm, yMm),
+    [view]
+  );
+  const toMm = useCallback(
+    (xPx: number, yPx: number) => makeToMm(BASE_PX_PER_MM, view, ORIGIN_X, ORIGIN_Y)(xPx, yPx),
+    [view]
+  );
+  const scale = BASE_PX_PER_MM * view.zoom;
 
   // ---- Load geometry on mount ----
   useEffect(() => {
@@ -184,7 +218,7 @@ export default function LevelCanvasPage() {
     setFuture([]);
     setState(next);
   }
-  function undo() {
+  const undo = useCallback(() => {
     setPast((p) => {
       if (p.length === 0) return p;
       const prev = p[p.length - 1];
@@ -193,8 +227,8 @@ export default function LevelCanvasPage() {
       return p.slice(0, -1);
     });
     setSelected(null);
-  }
-  function redo() {
+  }, [state]);
+  const redo = useCallback(() => {
     setFuture((f) => {
       if (f.length === 0) return f;
       const next = f[0];
@@ -203,11 +237,12 @@ export default function LevelCanvasPage() {
       return f.slice(1);
     });
     setSelected(null);
-  }
+  }, [state]);
 
   // ---- Hit testing ----
-  function findNodeAt(xPx: number, yPx: number): LocalNode | null {
+  function findNodeAt(xPx: number, yPx: number, excludeClientId?: string): LocalNode | null {
     for (const n of state.nodes) {
+      if (n.clientId === excludeClientId) continue;
       const p = toPx(n.xMm, n.yMm);
       if (dist(p.x, p.y, xPx, yPx) <= NODE_HIT_PX) return n;
     }
@@ -243,7 +278,7 @@ export default function LevelCanvasPage() {
       const sp = toPx(start.xMm, start.yMm);
       const ep = toPx(end.xMm, end.yMm);
       const proj = projectOntoSegment(xPx, yPx, sp.x, sp.y, ep.x, ep.y);
-      const threshold = Math.max(WALL_HIT_PX, (w.thicknessMm * PX_PER_MM) / 2 + 4);
+      const threshold = Math.max(WALL_HIT_PX, (w.thicknessMm * scale) / 2 + 4);
       if (proj.distance <= threshold && proj.distance < bestDist) {
         best = w;
         bestDist = proj.distance;
@@ -252,8 +287,24 @@ export default function LevelCanvasPage() {
     return best;
   }
 
-  function nearestSnapNode(xPx: number, yPx: number): LocalNode | null {
-    return findNodeAt(xPx, yPx);
+  function nearestSnapNode(xPx: number, yPx: number, excludeClientId?: string): LocalNode | null {
+    return findNodeAt(xPx, yPx, excludeClientId);
+  }
+
+  /** Snaps a world-space point to nearby wall endpoints first, then to the
+   * snap grid (if enabled), then leaves it as-is. */
+  function resolveDropPoint(xPx: number, yPx: number, excludeClientId?: string) {
+    const snapped = nearestSnapNode(xPx, yPx, excludeClientId);
+    if (snapped) return { xMm: snapped.xMm, yMm: snapped.yMm, snappedToNode: true as const };
+    const raw = toMm(xPx, yPx);
+    if (snapEnabled) {
+      return {
+        xMm: snapToGrid(raw.xMm, SNAP_GRID_MM),
+        yMm: snapToGrid(raw.yMm, SNAP_GRID_MM),
+        snappedToNode: false as const,
+      };
+    }
+    return { ...raw, snappedToNode: false as const };
   }
 
   // ---- Canvas pointer handlers ----
@@ -262,36 +313,47 @@ export default function LevelCanvasPage() {
     return { x: e.clientX - rect.left, y: e.clientY - rect.top };
   }
 
+  function beginPan(x: number, y: number) {
+    panRef.current = { startXPx: x, startYPx: y, startPan: view };
+  }
+
   function onPointerDown(e: ReactPointerEvent<HTMLCanvasElement>) {
     const { x, y } = getCanvasPos(e);
 
+    // Middle-click, or space+left-click, or the Pan tool: pan the viewport
+    // regardless of the active drawing tool.
+    if (e.button === 1 || spacePanning || tool === "pan") {
+      e.preventDefault();
+      beginPan(x, y);
+      return;
+    }
+
     if (tool === "wall") {
-      const snapped = nearestSnapNode(x, y);
+      const dropped = resolveDropPoint(x, y);
       if (!wallDrawStart) {
         let startClientId: string;
-        if (snapped) {
-          startClientId = snapped.clientId;
+        if (dropped.snappedToNode) {
+          startClientId = nearestSnapNode(x, y)!.clientId;
         } else {
-          const { xMm, yMm } = toMm(x, y);
-          const node: LocalNode = { clientId: newId(), serverId: null, xMm, yMm, zMm: 0 };
+          const node: LocalNode = { clientId: newId(), serverId: null, xMm: dropped.xMm, yMm: dropped.yMm, zMm: 0 };
           commit({ ...state, nodes: [...state.nodes, node] });
           startClientId = node.clientId;
         }
         setWallDrawStart(startClientId);
-        setPreviewMm(toMm(x, y));
+        setPreviewMm({ xMm: dropped.xMm, yMm: dropped.yMm });
       } else {
         let endClientId: string;
         let base = state;
-        if (snapped && snapped.clientId !== wallDrawStart) {
-          endClientId = snapped.clientId;
-        } else if (snapped && snapped.clientId === wallDrawStart) {
+        const snappedNode = nearestSnapNode(x, y);
+        if (snappedNode && snappedNode.clientId !== wallDrawStart) {
+          endClientId = snappedNode.clientId;
+        } else if (snappedNode && snappedNode.clientId === wallDrawStart) {
           // clicked same node again: cancel
           setWallDrawStart(null);
           setPreviewMm(null);
           return;
         } else {
-          const { xMm, yMm } = toMm(x, y);
-          const node: LocalNode = { clientId: newId(), serverId: null, xMm, yMm, zMm: 0 };
+          const node: LocalNode = { clientId: newId(), serverId: null, xMm: dropped.xMm, yMm: dropped.yMm, zMm: 0 };
           base = { ...state, nodes: [...state.nodes, node] };
           endClientId = node.clientId;
         }
@@ -380,9 +442,15 @@ export default function LevelCanvasPage() {
   function onPointerMove(e: ReactPointerEvent<HTMLCanvasElement>) {
     const { x, y } = getCanvasPos(e);
 
+    if (panRef.current) {
+      const { startXPx, startYPx, startPan } = panRef.current;
+      setView({ ...startPan, panXPx: startPan.panXPx + (x - startXPx), panYPx: startPan.panYPx + (y - startYPx) });
+      return;
+    }
+
     if (tool === "wall" && wallDrawStart) {
-      const snapped = nearestSnapNode(x, y);
-      setPreviewMm(snapped ? { xMm: snapped.xMm, yMm: snapped.yMm } : toMm(x, y));
+      const dropped = resolveDropPoint(x, y, wallDrawStart);
+      setPreviewMm({ xMm: dropped.xMm, yMm: dropped.yMm });
       return;
     }
 
@@ -390,10 +458,10 @@ export default function LevelCanvasPage() {
     if (!drag) return;
 
     if (drag.kind === "node") {
-      const { xMm, yMm } = toMm(x, y);
+      const dropped = resolveDropPoint(x, y, drag.clientId);
       setState((s) => ({
         ...s,
-        nodes: s.nodes.map((n) => (n.clientId === drag.clientId ? { ...n, xMm, yMm } : n)),
+        nodes: s.nodes.map((n) => (n.clientId === drag.clientId ? { ...n, xMm: dropped.xMm, yMm: dropped.yMm } : n)),
       }));
     } else if (drag.kind === "opening") {
       setState((s) => {
@@ -418,6 +486,10 @@ export default function LevelCanvasPage() {
   }
 
   function onPointerUp() {
+    if (panRef.current) {
+      panRef.current = null;
+      return;
+    }
     const drag = dragRef.current;
     if (drag) {
       setPast((p) => [...p, drag.beforeState]);
@@ -425,6 +497,96 @@ export default function LevelCanvasPage() {
       dragRef.current = null;
     }
   }
+
+  // ---- Wheel zoom (centered on cursor) ----
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const handler = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const cursorX = e.clientX - rect.left;
+      const cursorY = e.clientY - rect.top;
+      const factor = Math.exp(-e.deltaY * 0.0015);
+      setView((v) => zoomAt(v, BASE_PX_PER_MM, ORIGIN_X, ORIGIN_Y, cursorX, cursorY, factor));
+    };
+    canvas.addEventListener("wheel", handler, { passive: false });
+    return () => canvas.removeEventListener("wheel", handler);
+  }, []);
+
+  function zoomButton(factor: number) {
+    setView((v) => zoomAt(v, BASE_PX_PER_MM, ORIGIN_X, ORIGIN_Y, ORIGIN_X, ORIGIN_Y, factor));
+  }
+
+  function fitToViewport() {
+    if (state.nodes.length === 0) {
+      setView({ zoom: 1, panXPx: 0, panYPx: 0 });
+      return;
+    }
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const n of state.nodes) {
+      minX = Math.min(minX, n.xMm);
+      maxX = Math.max(maxX, n.xMm);
+      minY = Math.min(minY, n.yMm);
+      maxY = Math.max(maxY, n.yMm);
+    }
+    setView(fitView(BASE_PX_PER_MM, { minX, maxX, minY, maxY }, CANVAS_W, CANVAS_H));
+  }
+
+  // ---- Keyboard shortcuts ----
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        if (wallDrawStart) {
+          setWallDrawStart(null);
+          setPreviewMm(null);
+        } else if (panRef.current) {
+          panRef.current = null;
+        } else if (tool !== "select") {
+          setTool("select");
+        } else if (selected) {
+          setSelected(null);
+        }
+        return;
+      }
+      if (isTypingTarget(e.target)) return;
+      if (e.key === "Delete" || e.key === "Backspace") {
+        if (selected) {
+          e.preventDefault();
+          deleteSelected();
+        }
+        return;
+      }
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && !e.altKey && (e.key === "z" || e.key === "Z")) {
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+        return;
+      }
+      if (mod && !e.altKey && (e.key === "y" || e.key === "Y")) {
+        e.preventDefault();
+        redo();
+        return;
+      }
+      if (e.code === "Space") {
+        setSpacePanning(true);
+      }
+    }
+    function onKeyUp(e: KeyboardEvent) {
+      if (e.code === "Space") setSpacePanning(false);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, wallDrawStart, tool, undo, redo]);
 
   // ---- Delete helpers (cascade) ----
   function deleteNode(clientId: string) {
@@ -459,6 +621,12 @@ export default function LevelCanvasPage() {
   }
 
   // ---- Property edits (from side panel) ----
+  function updateNodeProp(clientId: string, patch: Partial<LocalNode>) {
+    commit({
+      ...state,
+      nodes: state.nodes.map((n) => (n.clientId === clientId ? { ...n, ...patch } : n)),
+    });
+  }
   function updateWallProp(clientId: string, patch: Partial<LocalWall>) {
     commit({
       ...state,
@@ -591,21 +759,34 @@ export default function LevelCanvasPage() {
     ctx.fillStyle = "#f7f7fa";
     ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
-    // grid
+    // grid: adaptive spacing so lines stay ~60px apart at any zoom level.
+    const stepMm = gridStepMm(scale);
+    const originPx = toPx(0, 0);
+    const stepPx = stepMm * scale;
     ctx.strokeStyle = "#e6e6ee";
     ctx.lineWidth = 1;
-    for (let gx = ORIGIN_X % 100; gx < CANVAS_W; gx += 100) {
+    const firstGx = ((originPx.x % stepPx) + stepPx) % stepPx;
+    for (let gx = firstGx; gx < CANVAS_W; gx += stepPx) {
       ctx.beginPath();
       ctx.moveTo(gx, 0);
       ctx.lineTo(gx, CANVAS_H);
       ctx.stroke();
     }
-    for (let gy = ORIGIN_Y % 100; gy < CANVAS_H; gy += 100) {
+    const firstGy = ((originPx.y % stepPx) + stepPx) % stepPx;
+    for (let gy = firstGy; gy < CANVAS_H; gy += stepPx) {
       ctx.beginPath();
       ctx.moveTo(0, gy);
       ctx.lineTo(CANVAS_W, gy);
       ctx.stroke();
     }
+    // origin axes, slightly darker, to help orient panning/zooming.
+    ctx.strokeStyle = "#d3d3e0";
+    ctx.beginPath();
+    ctx.moveTo(originPx.x, 0);
+    ctx.lineTo(originPx.x, CANVAS_H);
+    ctx.moveTo(0, originPx.y);
+    ctx.lineTo(CANVAS_W, originPx.y);
+    ctx.stroke();
 
     // walls
     for (const w of state.walls) {
@@ -616,16 +797,16 @@ export default function LevelCanvasPage() {
       const ep = toPx(end.xMm, end.yMm);
       const isSelected = selected?.type === "wall" && selected.clientId === w.clientId;
       ctx.strokeStyle = isSelected ? "#2563eb" : "#333";
-      ctx.lineWidth = Math.max(2, w.thicknessMm * PX_PER_MM);
+      ctx.lineWidth = Math.max(2, w.thicknessMm * scale);
       ctx.beginPath();
       ctx.moveTo(sp.x, sp.y);
       ctx.lineTo(ep.x, ep.y);
       ctx.stroke();
 
       const lengthMm = dist(start.xMm, start.yMm, end.xMm, end.yMm);
-      ctx.fillStyle = "#555";
+      ctx.fillStyle = isSelected ? "#2563eb" : "#555";
       ctx.font = "11px sans-serif";
-      ctx.fillText(`${Math.round(lengthMm)} mm`, (sp.x + ep.x) / 2 + 6, (sp.y + ep.y) / 2 - 6);
+      ctx.fillText(formatLength(lengthMm, unit), (sp.x + ep.x) / 2 + 6, (sp.y + ep.y) / 2 - 6);
     }
 
     // openings
@@ -646,7 +827,7 @@ export default function LevelCanvasPage() {
       const hy1 = sp.y + (ep.y - sp.y) * t1;
       const isSelected = selected?.type === "opening" && selected.clientId === o.clientId;
       ctx.strokeStyle = isSelected ? "#2563eb" : o.type === "DOOR" ? "#a0522d" : "#3b82f6";
-      ctx.lineWidth = Math.max(4, wall.thicknessMm * PX_PER_MM + 2);
+      ctx.lineWidth = Math.max(4, wall.thicknessMm * scale + 2);
       ctx.beginPath();
       ctx.moveTo(hx0, hy0);
       ctx.lineTo(hx1, hy1);
@@ -657,6 +838,13 @@ export default function LevelCanvasPage() {
     for (const n of state.nodes) {
       const p = toPx(n.xMm, n.yMm);
       const isSelected = selected?.type === "node" && selected.clientId === n.clientId;
+      if (isSelected) {
+        ctx.strokeStyle = "#2563eb";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+        ctx.stroke();
+      }
       ctx.fillStyle = isSelected ? "#2563eb" : "#111";
       ctx.beginPath();
       ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
@@ -677,10 +865,18 @@ export default function LevelCanvasPage() {
         ctx.lineTo(ep.x, ep.y);
         ctx.stroke();
         ctx.setLineDash([]);
+
+        const previewLenMm = dist(start.xMm, start.yMm, previewMm.xMm, previewMm.yMm);
+        ctx.fillStyle = "#475569";
+        ctx.fillText(formatLength(previewLenMm, unit), (sp.x + ep.x) / 2 + 6, (sp.y + ep.y) / 2 - 6);
       }
     }
-  }, [state, selected, tool, wallDrawStart, previewMm]);
+  }, [state, selected, tool, wallDrawStart, previewMm, view, unit, scale, toPx]);
 
+  const selectedNode = useMemo(
+    () => (selected?.type === "node" ? state.nodes.find((n) => n.clientId === selected.clientId) : null),
+    [selected, state.nodes]
+  );
   const selectedWall = useMemo(
     () => (selected?.type === "wall" ? state.walls.find((w) => w.clientId === selected.clientId) : null),
     [selected, state.walls]
@@ -689,8 +885,17 @@ export default function LevelCanvasPage() {
     () => (selected?.type === "opening" ? state.openings.find((o) => o.clientId === selected.clientId) : null),
     [selected, state.openings]
   );
+  const selectedWallLengthMm = useMemo(() => {
+    if (!selectedWall) return null;
+    const start = state.nodes.find((n) => n.clientId === selectedWall.startClientId);
+    const end = state.nodes.find((n) => n.clientId === selectedWall.endClientId);
+    if (!start || !end) return null;
+    return dist(start.xMm, start.yMm, end.xMm, end.yMm);
+  }, [selectedWall, state.nodes]);
 
   if (loading) return <p className="muted">Loading…</p>;
+
+  const cursorStyle = tool === "pan" || spacePanning ? "grab" : tool === "select" ? "default" : "crosshair";
 
   return (
     <div>
@@ -706,7 +911,7 @@ export default function LevelCanvasPage() {
       <h1>{level?.name ?? "Level"} — Canvas</h1>
 
       <div className="toolbar">
-        {(["select", "wall", "door", "window", "delete"] as Tool[]).map((t) => (
+        {(["select", "wall", "door", "window", "delete", "pan"] as Tool[]).map((t) => (
           <button
             key={t}
             className={tool === t ? "toolbar-btn active" : "toolbar-btn"}
@@ -719,6 +924,27 @@ export default function LevelCanvasPage() {
             {t[0].toUpperCase() + t.slice(1)}
           </button>
         ))}
+        <span className="toolbar-sep" />
+        <button className="toolbar-btn" onClick={() => zoomButton(1 / 1.25)} title="Zoom out">
+          −
+        </button>
+        <span className="muted" style={{ minWidth: 44, textAlign: "center", display: "inline-block" }}>
+          {Math.round(view.zoom * 100)}%
+        </span>
+        <button className="toolbar-btn" onClick={() => zoomButton(1.25)} title="Zoom in">
+          +
+        </button>
+        <button className="toolbar-btn" onClick={fitToViewport} title="Fit design to viewport">
+          Fit
+        </button>
+        <span className="toolbar-sep" />
+        <label className="muted" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+          <input type="checkbox" checked={snapEnabled} onChange={(e) => setSnapEnabled(e.target.checked)} />
+          Snap to grid ({SNAP_GRID_MM} mm)
+        </label>
+        <button className="toolbar-btn" onClick={() => setUnit(unit === "mm" ? "m" : "mm")} title="Toggle length unit">
+          Units: {unit}
+        </button>
         <span className="toolbar-sep" />
         <button className="toolbar-btn" onClick={undo} disabled={past.length === 0}>
           Undo
@@ -752,18 +978,50 @@ export default function LevelCanvasPage() {
           width={CANVAS_W}
           height={CANVAS_H}
           className="floor-canvas"
+          style={{ cursor: cursorStyle }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
+          onPointerLeave={onPointerUp}
+          onContextMenu={(e) => e.preventDefault()}
         />
         <aside className="side-panel">
           <h3>Inspector</h3>
-          {!selected && <p className="muted">Select a wall, door or window to edit it.</p>}
+          {!selected && <p className="muted">Select a point, wall, door or window to edit it.</p>}
+          {selectedNode && (
+            <div>
+              <p>
+                <strong>Point</strong>
+              </p>
+              <label>
+                X (mm)
+                <input
+                  type="number"
+                  value={Math.round(selectedNode.xMm)}
+                  onChange={(e) => updateNodeProp(selectedNode.clientId, { xMm: Number(e.target.value) })}
+                />
+              </label>
+              <label>
+                Y (mm)
+                <input
+                  type="number"
+                  value={Math.round(selectedNode.yMm)}
+                  onChange={(e) => updateNodeProp(selectedNode.clientId, { yMm: Number(e.target.value) })}
+                />
+              </label>
+              <button className="toolbar-btn danger" onClick={deleteSelected}>
+                Delete point
+              </button>
+            </div>
+          )}
           {selectedWall && (
             <div>
               <p>
                 <strong>Wall</strong>
               </p>
+              {selectedWallLengthMm != null && (
+                <p className="muted">Length: {formatLength(selectedWallLengthMm, unit)}</p>
+              )}
               <label>
                 Thickness (mm)
                 <input
@@ -840,7 +1098,9 @@ export default function LevelCanvasPage() {
       <p className="muted hint">
         Wall tool: click to start a wall, click again to finish it (click near an existing point to
         connect). Door/Window tool: click on a wall to add one. Select tool: drag points or
-        doors/windows to move them.
+        doors/windows to move them. Scroll to zoom (centered on cursor); hold Space, use the Pan
+        tool, or middle-click drag to pan. Esc cancels the current tool/action, Delete/Backspace
+        removes the selection, Ctrl/Cmd+Z undoes, Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y redoes.
       </p>
     </div>
   );
