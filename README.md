@@ -1,5 +1,7 @@
 # NayDesign
 
+[![CI](https://github.com/naydiko/universal-design/actions/workflows/ci.yml/badge.svg)](https://github.com/naydiko/universal-design/actions/workflows/ci.yml)
+
 ## Running NayDesign locally
 
 ### Prerequisites
@@ -96,4 +98,24 @@ docker compose down -v
 - The `docker` Spring profile (`application-docker.properties`) is used only
   inside the `backend` container; the `local` profile is used for IDE
   development.
+
+---
+
+## Continuous Integration
+
+Every push and pull request targeting `main` automatically runs
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml), which verifies:
+
+- **Backend** — `./mvnw verify` (unit tests, Spring context tests, and the
+  full Testcontainers-backed PostgreSQL/Flyway integration suite).
+- **Frontend** — `npm ci`, lint (`oxlint`), `npm test`, and `npm run build`
+  (which also type-checks via `tsc -b`).
+- **Docker** — `docker compose config`, `docker compose build`, and a smoke
+  test that starts the full stack and checks `/actuator/health`.
+
+If a workflow run fails, check the **Actions** tab on GitHub — each job
+uploads its test reports as an artifact when it fails.
+
+
+
 

@@ -169,14 +169,17 @@ public class AuthService {
         user.setPasswordHash(passwordEncoder.encode(request.newPassword()));
     }
 
+    @Transactional
     public void forgotPassword(ForgotPasswordRequest request) {
         passwordResetService.requestReset(request.email(), frontendBaseUrl);
     }
 
+    @Transactional
     public void resetPassword(ResetPasswordRequest request) {
         passwordResetService.resetPassword(request.token(), request.newPassword());
     }
 
+    @Transactional
     public void verifyEmail(String token) {
         emailVerificationService.verifyEmail(token);
     }
