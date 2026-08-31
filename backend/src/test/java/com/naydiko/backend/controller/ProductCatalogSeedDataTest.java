@@ -3,16 +3,9 @@ package com.naydiko.backend.controller;
 import com.naydiko.backend.domain.entity.User;
 import com.naydiko.backend.domain.enums.UserRole;
 import com.naydiko.backend.domain.enums.UserStatus;
-import com.naydiko.backend.domain.repository.UserRepository;
-import com.naydiko.backend.security.CustomUserDetails;
-import com.naydiko.backend.security.JwtService;
+import com.naydiko.backend.support.AbstractIntegrationTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.security.crypto.password.PasswordEncoder;
-import org.springframework.test.web.servlet.MockMvc;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -25,24 +18,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * and products come back from {@code GET /api/vendors} and
  * {@code GET /api/products} once authenticated.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-class ProductCatalogSeedDataTest {
+class ProductCatalogSeedDataTest extends AbstractIntegrationTest {
 
     private static final String TEST_EMAIL = "catalog-seed-test-user@example.com";
     private static final String TEST_PASSWORD = "SuperSecret123";
 
-    @Autowired
-    private MockMvc mockMvc;
-
-    @Autowired
-    private UserRepository userRepository;
-
-    @Autowired
-    private PasswordEncoder passwordEncoder;
-
-    @Autowired
-    private JwtService jwtService;
 
     private String authToken;
 
@@ -90,7 +70,7 @@ class ProductCatalogSeedDataTest {
                             .role(UserRole.CLIENT)
                             .status(UserStatus.ACTIVE)
                             .build()));
-            authToken = jwtService.generateToken(new CustomUserDetails(user));
+            authToken = tokenFor(user);
         }
         return authToken;
     }

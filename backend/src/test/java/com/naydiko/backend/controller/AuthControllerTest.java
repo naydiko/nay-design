@@ -1,22 +1,14 @@
 package com.naydiko.backend.controller;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.naydiko.backend.domain.entity.User;
 import com.naydiko.backend.domain.enums.UserRole;
 import com.naydiko.backend.domain.enums.UserStatus;
-import com.naydiko.backend.domain.repository.UserRepository;
 import com.naydiko.backend.dto.request.LoginRequest;
 import com.naydiko.backend.dto.request.RegisterRequest;
-import com.naydiko.backend.security.CustomUserDetails;
-import com.naydiko.backend.security.JwtService;
+import com.naydiko.backend.support.AbstractIntegrationTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
-import org.springframework.security.crypto.password.PasswordEncoder;
-import org.springframework.test.web.servlet.MockMvc;
 
 import static org.hamcrest.Matchers.notNullValue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -27,26 +19,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * Integration tests for registration, login and the protected {@code /api/me} endpoint.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-class AuthControllerTest {
+class AuthControllerTest extends AbstractIntegrationTest {
 
     private static final String TEST_EMAIL = "auth-test-user@example.com";
     private static final String TEST_PASSWORD = "SuperSecret123";
 
-    @Autowired
-    private MockMvc mockMvc;
-
-    private final ObjectMapper objectMapper = new ObjectMapper();
-
-    @Autowired
-    private UserRepository userRepository;
-
-    @Autowired
-    private PasswordEncoder passwordEncoder;
-
-    @Autowired
-    private JwtService jwtService;
 
     @AfterEach
     void cleanUp() {
@@ -115,9 +92,23 @@ class AuthControllerTest {
     }
 
     @Test
+    void protectedApi_withoutToken_returnsUnauthorized() throws Exception {
+        // /api/me is a special case handled above; verify a completely
+        // unrelated protected resource is also rejected without a token.
+        mockMvc.perform(get("/api/vendors"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void protectedApi_withInvalidToken_returnsUnauthorized() throws Exception {
+        mockMvc.perform(get("/api/vendors").header("Authorization", "Bearer not-a-real-token"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
     void me_withValidToken_returnsAuthenticatedUser() throws Exception {
         User user = createActiveUser();
-        String token = jwtService.generateToken(new CustomUserDetails(user));
+        String token = tokenFor(user);
 
         mockMvc.perform(get("/api/me").header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk())
