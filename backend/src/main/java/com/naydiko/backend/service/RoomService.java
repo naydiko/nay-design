@@ -17,8 +17,13 @@ import com.naydiko.backend.exception.ResourceNotFoundException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * Business logic for managing {@link Room}s within a {@link Level}, including
@@ -103,23 +108,42 @@ public class RoomService {
     public List<FurniturePlacementResponse> savePlacements(UUID roomId, List<FurniturePlacementRequest> requests) {
         Room room = findRoomOrThrow(roomId);
 
-        furniturePlacementRepository.deleteByRoomId(roomId);
-        furniturePlacementRepository.flush();
+        Map<UUID, FurniturePlacement> existingPlacements = furniturePlacementRepository.findByRoomId(roomId).stream()
+                .collect(Collectors.toMap(FurniturePlacement::getId, Function.identity()));
 
-        List<FurniturePlacement> placements = requests.stream()
-                .map(request -> FurniturePlacement.builder()
-                        .room(room)
-                        .product(findProductOrThrow(request.productId()))
-                        .xMm(request.xMm())
-                        .yMm(request.yMm())
-                        .zMm(request.zMm())
-                        .rotationAngle(request.rotationAngle())
-                        .scale(request.scale())
-                        .locked(request.locked())
-                        .build())
+        List<FurniturePlacement> upserted = new ArrayList<>();
+        for (FurniturePlacementRequest request : requests) {
+            FurniturePlacement placement;
+            if (request.id() != null) {
+                placement = existingPlacements.get(request.id());
+                if (placement == null) {
+                    throw new ResourceNotFoundException(
+                            "Furniture placement not found: " + request.id() + " for room " + roomId);
+                }
+            } else {
+                placement = FurniturePlacement.builder().room(room).build();
+            }
+
+            placement.setProduct(findProductOrThrow(request.productId()));
+            placement.setXMm(request.xMm());
+            placement.setYMm(request.yMm());
+            placement.setZMm(request.zMm());
+            placement.setRotationAngle(request.rotationAngle());
+            placement.setScale(request.scale());
+            placement.setLocked(request.locked());
+
+            upserted.add(placement);
+        }
+
+        List<FurniturePlacement> saved = furniturePlacementRepository.saveAll(upserted);
+        Set<UUID> keptIds = saved.stream().map(FurniturePlacement::getId).collect(Collectors.toSet());
+
+        List<FurniturePlacement> toRemove = existingPlacements.values().stream()
+                .filter(placement -> !keptIds.contains(placement.getId()))
                 .toList();
+        furniturePlacementRepository.deleteAll(toRemove);
 
-        return furniturePlacementRepository.saveAll(placements).stream()
+        return saved.stream()
                 .map(RoomService::toPlacementResponse)
                 .toList();
     }

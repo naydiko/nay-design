@@ -1,8 +1,11 @@
 package com.naydiko.backend.controller;
 
 import com.naydiko.backend.dto.request.CreateLevelRequest;
+import com.naydiko.backend.dto.request.LevelGeometryRequest;
 import com.naydiko.backend.dto.request.UpdateLevelRequest;
+import com.naydiko.backend.dto.response.LevelGeometryResponse;
 import com.naydiko.backend.dto.response.LevelResponse;
+import com.naydiko.backend.service.LevelGeometryService;
 import com.naydiko.backend.service.LevelService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -14,6 +17,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -22,16 +26,19 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * REST API for managing project levels (floors/storeys).
+ * REST API for managing project levels (floors/storeys), including their
+ * complete geometry document (nodes, walls, openings, rooms, room-wall borders).
  */
 @Tag(name = "Levels")
 @RestController
 public class LevelController {
 
     private final LevelService levelService;
+    private final LevelGeometryService levelGeometryService;
 
-    public LevelController(LevelService levelService) {
+    public LevelController(LevelService levelService, LevelGeometryService levelGeometryService) {
         this.levelService = levelService;
+        this.levelGeometryService = levelGeometryService;
     }
 
     @Operation(summary = "Create a new level within a project")
@@ -69,6 +76,21 @@ public class LevelController {
     public ResponseEntity<Void> deleteLevel(@Parameter(description = "Level id") @PathVariable UUID id) {
         levelService.deleteLevel(id);
         return ResponseEntity.noContent().build();
+    }
+
+    @Operation(summary = "Get the complete geometry (nodes, walls, openings, rooms, room-wall borders) of a level")
+    @GetMapping("/api/levels/{levelId}/geometry")
+    public ResponseEntity<LevelGeometryResponse> getGeometry(
+            @Parameter(description = "Level id") @PathVariable UUID levelId) {
+        return ResponseEntity.ok(levelGeometryService.getGeometry(levelId));
+    }
+
+    @Operation(summary = "Save (replace) the complete geometry of a level")
+    @PutMapping("/api/levels/{levelId}/geometry")
+    public ResponseEntity<LevelGeometryResponse> saveGeometry(
+            @Parameter(description = "Level id") @PathVariable UUID levelId,
+            @Valid @RequestBody LevelGeometryRequest request) {
+        return ResponseEntity.ok(levelGeometryService.saveGeometry(levelId, request));
     }
 }
 
