@@ -42,7 +42,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * have a server-assigned id (see {@code LevelGeometryService}), building a
  * brand-new rectangular room from scratch takes the same multi-phase save
  * the frontend canvas performs: persist nodes first, then walls, then
- * openings — each phase referencing only already-known real ids.
+ * openings â€” each phase referencing only already-known real ids.
  */
 class LevelGeometryIntegrationTest extends AbstractIntegrationTest {
 
@@ -53,8 +53,9 @@ class LevelGeometryIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void save_persistsNodesWallsAndOpeningsWithNoIssues() throws Exception {
-        UUID levelId = createLevel();
-        String token = bearer(createUserAndToken("geometry-caller"));
+        User owner = createActiveUser("geometry-caller");
+        UUID levelId = createLevel(owner);
+        String token = bearer(tokenFor(owner));
 
         JsonNode result = saveRectangleWithDoor(levelId, token);
 
@@ -66,8 +67,9 @@ class LevelGeometryIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void load_returnsPreviouslySavedGeometry() throws Exception {
-        UUID levelId = createLevel();
-        String token = bearer(createUserAndToken("geometry-caller"));
+        User owner = createActiveUser("geometry-caller");
+        UUID levelId = createLevel(owner);
+        String token = bearer(tokenFor(owner));
         saveRectangleWithDoor(levelId, token);
 
         mockMvc.perform(get("/api/levels/{levelId}/geometry", levelId).header("Authorization", token))
@@ -79,8 +81,9 @@ class LevelGeometryIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void update_existingGeometryChangesWallWithoutDuplicatingNodesOrWalls() throws Exception {
-        UUID levelId = createLevel();
-        String token = bearer(createUserAndToken("geometry-caller"));
+        User owner = createActiveUser("geometry-caller");
+        UUID levelId = createLevel(owner);
+        String token = bearer(tokenFor(owner));
         JsonNode saved = saveRectangleWithDoor(levelId, token);
 
         List<NodeRequest> nodes = toNodeRequests(saved.get("nodes"));
@@ -102,8 +105,9 @@ class LevelGeometryIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void save_wallReferencingUnknownNode_returnsBadRequest() throws Exception {
-        UUID levelId = createLevel();
-        String token = bearer(createUserAndToken("geometry-caller"));
+        User owner = createActiveUser("geometry-caller");
+        UUID levelId = createLevel(owner);
+        String token = bearer(tokenFor(owner));
 
         NodeRequest n1 = new NodeRequest(null, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
         WallRequest badWall = new WallRequest(
@@ -117,8 +121,9 @@ class LevelGeometryIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void save_zeroLengthWall_returnsBadRequestWithGeometryIssue() throws Exception {
-        UUID levelId = createLevel();
-        String token = bearer(createUserAndToken("geometry-caller"));
+        User owner = createActiveUser("geometry-caller");
+        UUID levelId = createLevel(owner);
+        String token = bearer(tokenFor(owner));
 
         // Two distinct nodes at the *same* coordinates -> zero-length wall.
         // Persist the (coincident) nodes first so the wall below can
@@ -147,8 +152,9 @@ class LevelGeometryIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void update_withInvalidWall_rollsBackEntireSave() throws Exception {
-        UUID levelId = createLevel();
-        String token = bearer(createUserAndToken("geometry-caller"));
+        User owner = createActiveUser("geometry-caller");
+        UUID levelId = createLevel(owner);
+        String token = bearer(tokenFor(owner));
 
         JsonNode baseline = saveRectangle(levelId, token);
         UUID firstWallId = UUID.fromString(baseline.get("walls").get(0).get("id").asText());
@@ -203,8 +209,7 @@ class LevelGeometryIntegrationTest extends AbstractIntegrationTest {
 
     // ---- helpers ----
 
-    private UUID createLevel() {
-        User owner = createActiveUser("geometry-project-owner");
+    private UUID createLevel(User owner) {
         Project project = projectRepository.save(Project.builder()
                 .owner(owner)
                 .name("Geometry Test Project")

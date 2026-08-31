@@ -38,8 +38,9 @@ class RoomControllerIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void create_returnsCreatedRoomWithLocationHeader() throws Exception {
-        UUID levelId = createLevel();
-        String token = bearer(createUserAndToken("room-caller"));
+        User owner = createActiveUser("room-caller");
+        String token = bearer(tokenFor(owner));
+        UUID levelId = createLevel(owner);
         CreateRoomRequest request = new CreateRoomRequest(
                 "Living Room", RoomType.LIVING_ROOM, "Oak parquet", "White paint", "White paint",
                 CeilingType.FLAT, new BigDecimal("2700.00"));
@@ -71,8 +72,9 @@ class RoomControllerIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void list_returnsRoomsForLevel() throws Exception {
-        UUID levelId = createLevel();
-        String token = bearer(createUserAndToken("room-caller"));
+        User owner = createActiveUser("room-caller");
+        String token = bearer(tokenFor(owner));
+        UUID levelId = createLevel(owner);
         createRoom(levelId, "Bedroom", RoomType.BEDROOM, token);
         createRoom(levelId, "Kitchen", RoomType.KITCHEN, token);
 
@@ -83,8 +85,9 @@ class RoomControllerIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void get_returnsRoomById() throws Exception {
-        UUID levelId = createLevel();
-        String token = bearer(createUserAndToken("room-caller"));
+        User owner = createActiveUser("room-caller");
+        String token = bearer(tokenFor(owner));
+        UUID levelId = createLevel(owner);
         String roomId = createRoom(levelId, "Office", RoomType.OFFICE, token);
 
         mockMvc.perform(get("/api/rooms/{id}", roomId).header("Authorization", token))
@@ -102,8 +105,9 @@ class RoomControllerIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void update_appliesAllFields() throws Exception {
-        UUID levelId = createLevel();
-        String token = bearer(createUserAndToken("room-caller"));
+        User owner = createActiveUser("room-caller");
+        String token = bearer(tokenFor(owner));
+        UUID levelId = createLevel(owner);
         String roomId = createRoom(levelId, "Original Room", RoomType.OTHER, token);
 
         UpdateRoomRequest update = new UpdateRoomRequest(
@@ -122,8 +126,9 @@ class RoomControllerIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void delete_removesRoomSoItIsNoLongerFetchable() throws Exception {
-        UUID levelId = createLevel();
-        String token = bearer(createUserAndToken("room-caller"));
+        User owner = createActiveUser("room-caller");
+        String token = bearer(tokenFor(owner));
+        UUID levelId = createLevel(owner);
         String roomId = createRoom(levelId, "Doomed Room", RoomType.OTHER, token);
 
         mockMvc.perform(delete("/api/rooms/{id}", roomId).header("Authorization", token))
@@ -133,8 +138,7 @@ class RoomControllerIntegrationTest extends AbstractIntegrationTest {
                 .andExpect(status().isNotFound());
     }
 
-    private UUID createLevel() {
-        User owner = createActiveUser("room-project-owner");
+    private UUID createLevel(User owner) {
         Project project = projectRepository.save(Project.builder()
                 .owner(owner)
                 .name("Room Test Project")

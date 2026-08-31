@@ -51,9 +51,10 @@ class RoomFurnitureIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void save_createsNewPlacement() throws Exception {
-        UUID roomId = createRoom();
+        User owner = createActiveUser("furniture-caller");
+        UUID roomId = createRoom(owner);
         UUID productId = createProduct().getId();
-        String token = bearer(createUserAndToken("furniture-caller"));
+        String token = bearer(tokenFor(owner));
 
         FurniturePlacementRequest request = new FurniturePlacementRequest(
                 null, productId, new BigDecimal("1000"), new BigDecimal("1200"), BigDecimal.ZERO,
@@ -73,9 +74,10 @@ class RoomFurnitureIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void load_returnsPreviouslySavedPlacements() throws Exception {
-        UUID roomId = createRoom();
+        User owner = createActiveUser("furniture-caller");
+        UUID roomId = createRoom(owner);
         UUID productId = createProduct().getId();
-        String token = bearer(createUserAndToken("furniture-caller"));
+        String token = bearer(tokenFor(owner));
 
         savePlacements(roomId, token, List.of(new FurniturePlacementRequest(
                 null, productId, new BigDecimal("500"), new BigDecimal("600"), BigDecimal.ZERO,
@@ -90,9 +92,10 @@ class RoomFurnitureIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void update_movesExistingPlacementWithoutDuplicating() throws Exception {
-        UUID roomId = createRoom();
+        User owner = createActiveUser("furniture-caller");
+        UUID roomId = createRoom(owner);
         UUID productId = createProduct().getId();
-        String token = bearer(createUserAndToken("furniture-caller"));
+        String token = bearer(tokenFor(owner));
 
         JsonNode saved = savePlacements(roomId, token, List.of(new FurniturePlacementRequest(
                 null, productId, new BigDecimal("500"), new BigDecimal("600"), BigDecimal.ZERO,
@@ -116,9 +119,10 @@ class RoomFurnitureIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void update_omittingAPlacement_removesIt() throws Exception {
-        UUID roomId = createRoom();
+        User owner = createActiveUser("furniture-caller");
+        UUID roomId = createRoom(owner);
         UUID productId = createProduct().getId();
-        String token = bearer(createUserAndToken("furniture-caller"));
+        String token = bearer(tokenFor(owner));
 
         JsonNode saved = savePlacements(roomId, token, List.of(
                 new FurniturePlacementRequest(null, productId, new BigDecimal("100"), new BigDecimal("100"),
@@ -147,9 +151,10 @@ class RoomFurnitureIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void update_withEmptyList_removesAllPlacements() throws Exception {
-        UUID roomId = createRoom();
+        User owner = createActiveUser("furniture-caller");
+        UUID roomId = createRoom(owner);
         UUID productId = createProduct().getId();
-        String token = bearer(createUserAndToken("furniture-caller"));
+        String token = bearer(tokenFor(owner));
 
         savePlacements(roomId, token, List.of(new FurniturePlacementRequest(
                 null, productId, new BigDecimal("100"), new BigDecimal("100"), BigDecimal.ZERO,
@@ -169,8 +174,9 @@ class RoomFurnitureIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void save_unknownProduct_returnsNotFound() throws Exception {
-        UUID roomId = createRoom();
-        String token = bearer(createUserAndToken("furniture-caller"));
+        User owner = createActiveUser("furniture-caller");
+        UUID roomId = createRoom(owner);
+        String token = bearer(tokenFor(owner));
 
         FurniturePlacementRequest request = new FurniturePlacementRequest(
                 null, UUID.randomUUID(), BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
@@ -193,8 +199,7 @@ class RoomFurnitureIntegrationTest extends AbstractIntegrationTest {
         return objectMapper.readTree(body);
     }
 
-    private UUID createRoom() {
-        User owner = createActiveUser("furniture-project-owner");
+    private UUID createRoom(User owner) {
         Project project = projectRepository.save(Project.builder()
                 .owner(owner).name("Furniture Test Project").projectType(ProjectType.RESIDENTIAL).build());
         Level level = levelRepository.save(Level.builder().project(project).name("Furniture Test Level").build());

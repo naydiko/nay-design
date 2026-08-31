@@ -26,6 +26,7 @@ import com.naydiko.backend.geometry.model.WallGeometry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -76,8 +77,8 @@ public class RoomService {
     }
 
     @Transactional
-    public RoomResponse createRoom(UUID levelId, CreateRoomRequest request) {
-        Level level = findLevelOrThrow(levelId);
+    public RoomResponse createRoom(UUID levelId, UUID requesterId, CreateRoomRequest request) {
+        Level level = findOwnedLevelOrThrow(levelId, requesterId);
 
         Room room = Room.builder()
                 .level(level)
@@ -94,8 +95,8 @@ public class RoomService {
     }
 
     @Transactional
-    public RoomResponse updateRoom(UUID id, UpdateRoomRequest request) {
-        Room room = findRoomOrThrow(id);
+    public RoomResponse updateRoom(UUID id, UUID requesterId, UpdateRoomRequest request) {
+        Room room = findOwnedRoomOrThrow(id, requesterId);
 
         room.setName(request.name());
         room.setType(request.type());
@@ -108,32 +109,33 @@ public class RoomService {
         return toResponse(room);
     }
 
-    public RoomResponse getRoom(UUID id) {
-        return toResponse(findRoomOrThrow(id));
+    public RoomResponse getRoom(UUID id, UUID requesterId) {
+        return toResponse(findOwnedRoomOrThrow(id, requesterId));
     }
 
-    public List<RoomResponse> listRoomsByLevel(UUID levelId) {
+    public List<RoomResponse> listRoomsByLevel(UUID levelId, UUID requesterId) {
+        findOwnedLevelOrThrow(levelId, requesterId);
         return roomRepository.findByLevelId(levelId).stream()
                 .map(RoomService::toResponse)
                 .toList();
     }
 
     @Transactional
-    public void deleteRoom(UUID id) {
-        Room room = findRoomOrThrow(id);
+    public void deleteRoom(UUID id, UUID requesterId) {
+        Room room = findOwnedRoomOrThrow(id, requesterId);
         roomRepository.delete(room);
     }
 
-    public List<FurniturePlacementResponse> getPlacements(UUID roomId) {
-        findRoomOrThrow(roomId);
+    public List<FurniturePlacementResponse> getPlacements(UUID roomId, UUID requesterId) {
+        findOwnedRoomOrThrow(roomId, requesterId);
         return furniturePlacementRepository.findByRoomId(roomId).stream()
                 .map(RoomService::toPlacementResponse)
                 .toList();
     }
 
     @Transactional
-    public List<FurniturePlacementResponse> savePlacements(UUID roomId, List<FurniturePlacementRequest> requests) {
-        return savePlacementsWithWarnings(roomId, requests).placements();
+    public List<FurniturePlacementResponse> savePlacements(UUID roomId, UUID requesterId, List<FurniturePlacementRequest> requests) {
+        return savePlacementsWithWarnings(roomId, requesterId, requests).placements();
     }
 
     /**
@@ -144,8 +146,8 @@ public class RoomService {
      * (Stage 1 does not reject saves on these findings).
      */
     @Transactional
-    public PlacementsSaveResult savePlacementsWithWarnings(UUID roomId, List<FurniturePlacementRequest> requests) {
-        Room room = findRoomOrThrow(roomId);
+    public PlacementsSaveResult savePlacementsWithWarnings(UUID roomId, UUID requesterId, List<FurniturePlacementRequest> requests) {
+        Room room = findOwnedRoomOrThrow(roomId, requesterId);
 
         Map<UUID, FurniturePlacement> existingPlacements = furniturePlacementRepository.findByRoomId(roomId).stream()
                 .collect(Collectors.toMap(FurniturePlacement::getId, Function.identity()));
@@ -294,6 +296,31 @@ public class RoomService {
     private Level findLevelOrThrow(UUID levelId) {
         return levelRepository.findById(levelId)
                 .orElseThrow(() -> new ResourceNotFoundException("Level not found: " + levelId));
+    }
+
+    /**
+     * Loads a level and verifies the requester owns its parent project —
+     * a level id alone is never sufficient to create/list rooms within it.
+     */
+    private Level findOwnedLevelOrThrow(UUID levelId, UUID requesterId) {
+        Level level = findLevelOrThrow(levelId);
+        if (!level.getProject().getOwner().getId().equals(requesterId)) {
+            throw new AccessDeniedException("You do not have access to this level");
+        }
+        return level;
+    }
+
+    /**
+     * Loads a room and verifies the requester owns its level's parent
+     * project — a room id alone is never sufficient to read/modify it or
+     * its furniture layout.
+     */
+    private Room findOwnedRoomOrThrow(UUID id, UUID requesterId) {
+        Room room = findRoomOrThrow(id);
+        if (!room.getLevel().getProject().getOwner().getId().equals(requesterId)) {
+            throw new AccessDeniedException("You do not have access to this room");
+        }
+        return room;
     }
 
     private Product findProductOrThrow(UUID productId) {

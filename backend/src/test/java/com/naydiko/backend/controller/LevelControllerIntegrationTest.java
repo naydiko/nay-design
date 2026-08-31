@@ -32,8 +32,9 @@ class LevelControllerIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void create_returnsCreatedLevelWithLocationHeader() throws Exception {
-        UUID projectId = createProject();
-        String token = bearer(createUserAndToken("level-caller"));
+        User owner = createActiveUser("level-caller");
+        String token = bearer(tokenFor(owner));
+        UUID projectId = createProject(owner);
         CreateLevelRequest request = new CreateLevelRequest("Ground Floor", new BigDecimal("0.00"), 0);
 
         mockMvc.perform(post("/api/projects/{projectId}/levels", projectId)
@@ -61,8 +62,9 @@ class LevelControllerIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void list_returnsLevelsOrderedByOrderIndex() throws Exception {
-        UUID projectId = createProject();
-        String token = bearer(createUserAndToken("level-caller"));
+        User owner = createActiveUser("level-caller");
+        String token = bearer(tokenFor(owner));
+        UUID projectId = createProject(owner);
         createLevel(projectId, "Second Floor", 1, token);
         createLevel(projectId, "Ground Floor", 0, token);
 
@@ -75,8 +77,9 @@ class LevelControllerIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void get_returnsLevelById() throws Exception {
-        UUID projectId = createProject();
-        String token = bearer(createUserAndToken("level-caller"));
+        User owner = createActiveUser("level-caller");
+        String token = bearer(tokenFor(owner));
+        UUID projectId = createProject(owner);
         String levelId = createLevel(projectId, "Ground Floor", 0, token);
 
         mockMvc.perform(get("/api/levels/{id}", levelId).header("Authorization", token))
@@ -93,9 +96,37 @@ class LevelControllerIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
+    void get_levelOwnedByAnotherUser_returnsForbidden() throws Exception {
+        User owner = createActiveUser("level-caller");
+        String token = bearer(tokenFor(owner));
+        String levelId = createLevel(createProject(owner), "Ground Floor", 0, token);
+
+        String otherUsersToken = bearer(createUserAndToken("level-intruder"));
+
+        mockMvc.perform(get("/api/levels/{id}", levelId).header("Authorization", otherUsersToken))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void delete_levelOwnedByAnotherUser_returnsForbiddenAndDoesNotDelete() throws Exception {
+        User owner = createActiveUser("level-caller");
+        String token = bearer(tokenFor(owner));
+        String levelId = createLevel(createProject(owner), "Ground Floor", 0, token);
+
+        String otherUsersToken = bearer(createUserAndToken("level-intruder"));
+
+        mockMvc.perform(delete("/api/levels/{id}", levelId).header("Authorization", otherUsersToken))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(get("/api/levels/{id}", levelId).header("Authorization", token))
+                .andExpect(status().isOk());
+    }
+
+    @Test
     void update_appliesAllFields() throws Exception {
-        UUID projectId = createProject();
-        String token = bearer(createUserAndToken("level-caller"));
+        User owner = createActiveUser("level-caller");
+        String token = bearer(tokenFor(owner));
+        UUID projectId = createProject(owner);
         String levelId = createLevel(projectId, "Original Name", 0, token);
 
         UpdateLevelRequest update = new UpdateLevelRequest("Renamed Floor", new BigDecimal("3000.00"), 5, false);
@@ -113,8 +144,9 @@ class LevelControllerIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void delete_removesLevelSoItIsNoLongerFetchable() throws Exception {
-        UUID projectId = createProject();
-        String token = bearer(createUserAndToken("level-caller"));
+        User owner = createActiveUser("level-caller");
+        String token = bearer(tokenFor(owner));
+        UUID projectId = createProject(owner);
         String levelId = createLevel(projectId, "Doomed Floor", 0, token);
 
         mockMvc.perform(delete("/api/levels/{id}", levelId).header("Authorization", token))
@@ -124,8 +156,7 @@ class LevelControllerIntegrationTest extends AbstractIntegrationTest {
                 .andExpect(status().isNotFound());
     }
 
-    private UUID createProject() {
-        User owner = createActiveUser("level-project-owner");
+    private UUID createProject(User owner) {
         Project project = Project.builder()
                 .owner(owner)
                 .name("Level Test Project")

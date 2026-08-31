@@ -32,6 +32,7 @@ import com.naydiko.backend.geometry.model.RoomBoundary;
 import com.naydiko.backend.geometry.model.WallGeometry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -87,7 +88,8 @@ public class LevelGeometryService {
         this.geometryEngine = geometryEngine;
     }
 
-    public LevelGeometryResponse getGeometry(UUID levelId) {
+    public LevelGeometryResponse getGeometry(UUID levelId, UUID requesterId) {
+        findOwnedLevelOrThrow(levelId, requesterId);
         return buildGeometryResponse(levelId, null);
     }
 
@@ -118,8 +120,8 @@ public class LevelGeometryService {
     }
 
     @Transactional
-    public LevelGeometryResponse saveGeometry(UUID levelId, LevelGeometryRequest request) {
-        Level level = findLevelOrThrow(levelId);
+    public LevelGeometryResponse saveGeometry(UUID levelId, UUID requesterId, LevelGeometryRequest request) {
+        Level level = findOwnedLevelOrThrow(levelId, requesterId);
 
         Map<UUID, Node> existingNodes = indexById(nodeRepository.findByLevelId(levelId), Node::getId);
         Map<UUID, Wall> existingWalls = indexById(wallRepository.findByLevelId(levelId), Wall::getId);
@@ -376,6 +378,18 @@ public class LevelGeometryService {
     private Level findLevelOrThrow(UUID levelId) {
         return levelRepository.findById(levelId)
                 .orElseThrow(() -> new ResourceNotFoundException("Level not found: " + levelId));
+    }
+
+    /**
+     * Loads a level and verifies the requester owns its parent project —
+     * a level id alone is never sufficient to read or replace its geometry.
+     */
+    private Level findOwnedLevelOrThrow(UUID levelId, UUID requesterId) {
+        Level level = findLevelOrThrow(levelId);
+        if (!level.getProject().getOwner().getId().equals(requesterId)) {
+            throw new AccessDeniedException("You do not have access to this level");
+        }
+        return level;
     }
 
     private static NodeResponse toNodeResponse(Node node) {

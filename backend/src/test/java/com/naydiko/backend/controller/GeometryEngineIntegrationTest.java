@@ -46,7 +46,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * matrix, exercised through the real {@code /api/levels/{id}/geometry} and
  * {@code /api/rooms/{id}/placements} endpoints rather than calling the
  * engine directly (see {@code GeometryEngineTest} for focused unit tests of
- * the same rules) — this confirms the wiring from HTTP request through
+ * the same rules) â€” this confirms the wiring from HTTP request through
  * {@code LevelGeometryService}/{@code RoomService} into the engine, and
  * back out as structured {@code issues} in the response body.
  */
@@ -63,8 +63,9 @@ class GeometryEngineIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void validRoom_closedRectangleHasNoIssues() throws Exception {
-        UUID levelId = createLevel();
-        String token = bearer(createUserAndToken("engine-caller"));
+        User owner = createActiveUser("engine-caller");
+        UUID levelId = createLevel(owner);
+        String token = bearer(tokenFor(owner));
 
         JsonNode result = saveClosedRoom(levelId, token);
 
@@ -74,8 +75,9 @@ class GeometryEngineIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void invalidWall_zeroLengthIsRejected() throws Exception {
-        UUID levelId = createLevel();
-        String token = bearer(createUserAndToken("engine-caller"));
+        User owner = createActiveUser("engine-caller");
+        UUID levelId = createLevel(owner);
+        String token = bearer(tokenFor(owner));
 
         NodeRequest n1 = new NodeRequest(null, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
         NodeRequest n2 = new NodeRequest(null, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
@@ -96,8 +98,9 @@ class GeometryEngineIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void openingOutsideWall_isRejected() throws Exception {
-        UUID levelId = createLevel();
-        String token = bearer(createUserAndToken("engine-caller"));
+        User owner = createActiveUser("engine-caller");
+        UUID levelId = createLevel(owner);
+        String token = bearer(tokenFor(owner));
 
         // A single 1000mm wall; a 900mm-wide door at offset 500 doesn't fit
         // (500 + 900 = 1400 > 1000).
@@ -117,8 +120,9 @@ class GeometryEngineIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void furnitureOutsideRoom_isReportedAsWarningButSaveSucceeds() throws Exception {
-        UUID levelId = createLevel();
-        String token = bearer(createUserAndToken("engine-caller"));
+        User owner = createActiveUser("engine-caller");
+        UUID levelId = createLevel(owner);
+        String token = bearer(tokenFor(owner));
         UUID roomId = idOf(saveClosedRoom(levelId, token).get("rooms").get(0));
         UUID productId = createProduct("500x500 stool", "500.00", "500.00").getId();
 
@@ -131,8 +135,9 @@ class GeometryEngineIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void furnitureIntersectingWall_isReportedAsWarningButSaveSucceeds() throws Exception {
-        UUID levelId = createLevel();
-        String token = bearer(createUserAndToken("engine-caller"));
+        User owner = createActiveUser("engine-caller");
+        UUID levelId = createLevel(owner);
+        String token = bearer(tokenFor(owner));
         UUID roomId = idOf(saveClosedRoom(levelId, token).get("rooms").get(0));
         // Large item straddling the right-hand wall (a vertical wall at x=4000).
         UUID productId = createProduct("wall-hugging cabinet", "600.00", "600.00").getId();
@@ -146,8 +151,9 @@ class GeometryEngineIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void furnitureIntersectingFurniture_isReportedAsWarningButSaveSucceeds() throws Exception {
-        UUID levelId = createLevel();
-        String token = bearer(createUserAndToken("engine-caller"));
+        User owner = createActiveUser("engine-caller");
+        UUID levelId = createLevel(owner);
+        String token = bearer(tokenFor(owner));
         UUID roomId = idOf(saveClosedRoom(levelId, token).get("rooms").get(0));
         UUID productId = createProduct("700x700 ottoman", "700.00", "700.00").getId();
 
@@ -162,8 +168,9 @@ class GeometryEngineIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void furnitureBlockingDoor_isReportedAsWarningButSaveSucceeds() throws Exception {
-        UUID levelId = createLevel();
-        String token = bearer(createUserAndToken("engine-caller"));
+        User owner = createActiveUser("engine-caller");
+        UUID levelId = createLevel(owner);
+        String token = bearer(tokenFor(owner));
 
         JsonNode withWalls = saveRectangleWalls(levelId, token);
         UUID firstWallId = idOf(withWalls.get("walls").get(0));
@@ -207,8 +214,7 @@ class GeometryEngineIntegrationTest extends AbstractIntegrationTest {
 
     // ---- helpers ----
 
-    private UUID createLevel() {
-        User owner = createActiveUser("engine-project-owner");
+    private UUID createLevel(User owner) {
         Project project = projectRepository.save(Project.builder()
                 .owner(owner).name("Geometry Engine Test Project").projectType(ProjectType.RESIDENTIAL).build());
         Level level = levelRepository.save(Level.builder().project(project).name("Geometry Engine Test Level").build());
