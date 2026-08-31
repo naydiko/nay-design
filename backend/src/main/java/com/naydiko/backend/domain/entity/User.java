@@ -73,6 +73,11 @@ public class User {
     @Column(name = "phone_number", length = 40)
     private String phoneNumber;
 
+    @NotBlank
+    @Size(max = 255)
+    @Column(name = "password_hash", nullable = false, length = 255)
+    private String passwordHash;
+
     @NotNull
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 30)
