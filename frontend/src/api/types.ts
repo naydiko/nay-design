@@ -19,8 +19,8 @@ export interface LoginRequest {
   password: string;
 }
 
-export type UserRole = "CLIENT" | "DESIGNER" | "VENDOR" | "ADMIN";
-export type UserStatus = "ACTIVE" | "INACTIVE" | "SUSPENDED";
+export type UserRole = "CLIENT" | "DESIGNER" | "ADMIN";
+export type UserStatus = "ACTIVE" | "DISABLED" | "INVITED";
 
 export interface UserResponse {
   id: UUID;
@@ -49,7 +49,7 @@ export type ProjectType =
   | "NEW_BUILD"
   | "OUTDOOR"
   | "OTHER";
-export type ProjectStatus = "DRAFT" | "ACTIVE" | "ARCHIVED" | "COMPLETED";
+export type ProjectStatus = "DRAFT" | "ACTIVE" | "IN_REVIEW" | "COMPLETED" | "ARCHIVED";
 
 export interface CreateProjectRequest {
   ownerId: UUID;
@@ -61,7 +61,18 @@ export interface CreateProjectRequest {
   currency?: string;
 }
 
-export interface UpdateProjectRequest extends CreateProjectRequest {}
+// NOTE: unlike CreateProjectRequest, the backend's UpdateProjectRequest does
+// not accept ownerId (ownership isn't reassignable via this endpoint) and
+// requires an explicit status.
+export interface UpdateProjectRequest {
+  name: string;
+  description?: string;
+  projectType: ProjectType;
+  status: ProjectStatus;
+  budgetMin?: number;
+  budgetMax?: number;
+  currency?: string;
+}
 
 export interface ProjectResponse {
   id: UUID;
@@ -84,11 +95,13 @@ export interface CreateLevelRequest {
   orderIndex?: number;
 }
 
+// NOTE: despite being PATCH, the backend's UpdateLevelRequest is a full
+// replace: name/orderIndex/visible are required, only elevationMm is optional.
 export interface UpdateLevelRequest {
-  name?: string;
+  name: string;
   elevationMm?: number;
-  orderIndex?: number;
-  visible?: boolean;
+  orderIndex: number;
+  visible: boolean;
 }
 
 export interface LevelResponse {
@@ -109,8 +122,8 @@ export interface LevelResponse {
 // ---- Geometry ----
 export type WallKind = "INTERIOR" | "EXTERIOR" | "LOAD_BEARING" | "PARTITION";
 export type OpeningType = "DOOR" | "WINDOW" | "ARCHWAY";
-export type OpeningDirection = "IN" | "OUT";
-export type OpeningSwing = "LEFT" | "RIGHT";
+export type OpeningDirection = "LEFT" | "RIGHT";
+export type OpeningSwing = "IN" | "OUT" | "SLIDING" | "FIXED" | "NONE";
 export type RoomType =
   | "LIVING_ROOM"
   | "BEDROOM"
@@ -122,7 +135,7 @@ export type RoomType =
   | "HALLWAY"
   | "OUTDOOR"
   | "OTHER";
-export type CeilingType = "FLAT" | "SLOPED" | "VAULTED" | "COFFERED" | "OTHER";
+export type CeilingType = "FLAT" | "SUSPENDED" | "COFFERED" | "VAULTED" | "TRAY" | "EXPOSED" | "OTHER";
 
 export interface NodeDto {
   id: UUID | null;
@@ -178,11 +191,20 @@ export interface LevelGeometryResponse {
   openings: (OpeningDto & { id: UUID })[];
   rooms: (RoomGeometryDto & { id: UUID })[];
   roomWalls: RoomWallDto[];
+  /** Non-blocking Geometry Engine findings from the most recent save (e.g. a room not yet closed). Absent on plain reads. */
+  warnings?: string[];
+}
+
+export interface ApiFieldError {
+  field: string;
+  message: string;
 }
 
 export interface ApiError {
   message: string;
   status?: number;
+  /** Field-level details (bean validation errors, or Geometry Engine issues: field = issue code). */
+  fieldErrors?: ApiFieldError[];
 }
 
 // ---- Rooms ----
@@ -213,7 +235,7 @@ export interface RoomResponse {
 }
 
 // ---- Vendors ----
-export type VendorStatus = "ACTIVE" | "INACTIVE";
+export type VendorStatus = "ACTIVE" | "INACTIVE" | "PENDING_REVIEW";
 
 export interface VendorResponse {
   id: UUID;

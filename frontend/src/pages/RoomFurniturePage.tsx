@@ -8,7 +8,6 @@ import { Link, useParams } from "react-router-dom";
 import { ProductApi, RoomApi, VendorApi } from "../api/endpoints";
 import type {
   FurniturePlacementRequest,
-  FurniturePlacementResponse,
   ProductResponse,
   RoomResponse,
   VendorResponse,
@@ -80,6 +79,7 @@ export default function RoomFurniturePage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const [warnings, setWarnings] = useState<string[]>([]);
 
   const dragRef = useRef<{
     kind: "move" | "rotate";
@@ -299,6 +299,7 @@ export default function RoomFurniturePage() {
     setSaving(true);
     setError(null);
     setStatus(null);
+    setWarnings([]);
     try {
       const body: FurniturePlacementRequest[] = placements.map((p) => ({
         id: p.serverId,
@@ -310,7 +311,10 @@ export default function RoomFurniturePage() {
         scale: p.scale,
         locked: p.locked,
       }));
-      const response: FurniturePlacementResponse[] = await RoomApi.savePlacements(roomId, body);
+      const { placements: response, warnings: geometryWarnings } = await RoomApi.savePlacements(
+        roomId,
+        body
+      );
       const productById = new Map(products.map((prod) => [prod.id, prod]));
       // Re-fetch any products referenced by the response but missing from the
       // currently-filtered catalog list (e.g. filtered out by category).
@@ -337,6 +341,7 @@ export default function RoomFurniturePage() {
       setFuture([]);
       setSelectedId(null);
       setStatus("Saved");
+      setWarnings(geometryWarnings);
     } catch (err) {
       setError((err as { message?: string }).message ?? "Failed to save furniture layout");
     } finally {
@@ -422,6 +427,16 @@ export default function RoomFurniturePage() {
       </div>
 
       {error && <div className="error">{error}</div>}
+      {warnings.length > 0 && (
+        <div className="warning-banner">
+          <strong>Layout saved with warnings:</strong>
+          <ul>
+            {warnings.map((w, i) => (
+              <li key={i}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="room-layout">
         <aside className="catalog-panel">

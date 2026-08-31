@@ -116,6 +116,7 @@ export default function LevelCanvasPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const [warnings, setWarnings] = useState<string[]>([]);
 
   const dragRef = useRef<{
     kind: "node" | "opening";
@@ -478,6 +479,7 @@ export default function LevelCanvasPage() {
     setSaving(true);
     setStatus(null);
     setError(null);
+    setWarnings([]);
     try {
       let working = state;
 
@@ -540,6 +542,7 @@ export default function LevelCanvasPage() {
       setFuture([]);
       setSelected(null);
       setStatus("Saved");
+      setWarnings(finalResponse.warnings ?? []);
     } catch (err) {
       setError((err as { message?: string }).message ?? "Failed to save geometry");
     } finally {
@@ -732,6 +735,16 @@ export default function LevelCanvasPage() {
       </div>
 
       {error && <div className="error">{error}</div>}
+      {warnings.length > 0 && (
+        <div className="warning-banner">
+          <strong>Saved with warnings:</strong>
+          <ul>
+            {warnings.map((w, i) => (
+              <li key={i}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="canvas-layout">
         <canvas

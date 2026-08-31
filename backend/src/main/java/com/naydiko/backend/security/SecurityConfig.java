@@ -69,6 +69,10 @@ public class SecurityConfig {
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("*"));
         configuration.setAllowCredentials(true);
+        // Custom headers are not exposed to client JS by default under CORS;
+        // this one carries non-blocking Geometry Engine warnings (see
+        // RoomController#savePlacements).
+        configuration.setExposedHeaders(List.of("X-Geometry-Warnings"));
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", configuration);
         return source;

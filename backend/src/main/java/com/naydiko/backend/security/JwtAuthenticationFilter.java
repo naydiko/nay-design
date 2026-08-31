@@ -53,8 +53,10 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     SecurityContextHolder.getContext().setAuthentication(authToken);
                 }
             }
-        } catch (JwtException | IllegalArgumentException ex) {
-            // Invalid/expired token: leave the request unauthenticated.
+        } catch (JwtException | IllegalArgumentException | org.springframework.security.core.userdetails.UsernameNotFoundException ex) {
+            // Invalid/expired token, or the token's subject no longer
+            // resolves to a user (e.g. account deleted): leave the request
+            // unauthenticated rather than surfacing a 500.
             SecurityContextHolder.clearContext();
         }
 

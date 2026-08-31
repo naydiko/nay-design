@@ -86,7 +86,21 @@ public class RoomController {
     public ResponseEntity<List<FurniturePlacementResponse>> savePlacements(
             @Parameter(description = "Room id") @PathVariable UUID roomId,
             @Valid @RequestBody List<FurniturePlacementRequest> placements) {
-        return ResponseEntity.ok(roomService.savePlacements(roomId, placements));
+        RoomService.PlacementsSaveResult result = roomService.savePlacementsWithWarnings(roomId, placements);
+
+        ResponseEntity.BodyBuilder response = ResponseEntity.ok();
+        if (!result.warnings().isEmpty()) {
+            // Non-blocking Geometry Engine findings (e.g. furniture outside
+            // the room, overlapping walls/furniture, or blocking a door).
+            // Kept out of the JSON body to preserve the existing List<...>
+            // response contract; exposed via a header instead (see
+            // SecurityConfig's CORS exposedHeaders).
+            String encoded = result.warnings().stream()
+                    .map(issue -> issue.code() + ": " + issue.message().replace("\n", " "))
+                    .collect(java.util.stream.Collectors.joining(" | "));
+            response.header("X-Geometry-Warnings", encoded);
+        }
+        return response.body(result.placements());
     }
 }
 

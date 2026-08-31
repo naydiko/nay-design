@@ -133,6 +133,18 @@ public class RoomService {
 
     @Transactional
     public List<FurniturePlacementResponse> savePlacements(UUID roomId, List<FurniturePlacementRequest> requests) {
+        return savePlacementsWithWarnings(roomId, requests).placements();
+    }
+
+    /**
+     * Same as {@link #savePlacements}, but also returns the (non-blocking)
+     * Geometry Engine findings for the freshly-saved layout — e.g. furniture
+     * outside the room, overlapping other furniture/walls, or blocking a
+     * door's clearance — so the controller can surface them to the caller
+     * (Stage 1 does not reject saves on these findings).
+     */
+    @Transactional
+    public PlacementsSaveResult savePlacementsWithWarnings(UUID roomId, List<FurniturePlacementRequest> requests) {
         Room room = findRoomOrThrow(roomId);
 
         Map<UUID, FurniturePlacement> existingPlacements = furniturePlacementRepository.findByRoomId(roomId).stream()
@@ -171,22 +183,32 @@ public class RoomService {
         furniturePlacementRepository.deleteAll(toRemove);
 
         // Geometry Engine: advisory-only for Stage 1 (fit/intersections/door
-        // clearance are logged, not blocking — the canvas does not yet
-        // prevent free placement/overlap).
-        validateFurnitureGeometry(room, saved);
+        // clearance are surfaced as warnings, not blocking — the canvas does
+        // not yet prevent free placement/overlap).
+        List<GeometryValidationIssue> warnings = validateFurnitureGeometry(room, saved);
 
-        return saved.stream()
+        List<FurniturePlacementResponse> responses = saved.stream()
                 .map(RoomService::toPlacementResponse)
                 .toList();
+        return new PlacementsSaveResult(responses, warnings);
+    }
+
+    /**
+     * Result of {@link #savePlacementsWithWarnings}: the saved placements
+     * plus any non-blocking Geometry Engine findings about the layout.
+     */
+    public record PlacementsSaveResult(
+            List<FurniturePlacementResponse> placements,
+            List<GeometryValidationIssue> warnings) {
     }
 
     /**
      * Runs the Geometry Engine over a room's freshly-saved furniture layout:
      * missing/invalid product dimensions, room fit, wall intersections,
      * furniture-furniture intersections, and door clearance. All findings
-     * are logged (Stage 1 does not block saves on spatial overlap).
+     * are warnings (Stage 1 does not block saves on spatial overlap).
      */
-    private void validateFurnitureGeometry(Room room, List<FurniturePlacement> placements) {
+    private List<GeometryValidationIssue> validateFurnitureGeometry(Room room, List<FurniturePlacement> placements) {
         List<GeometryValidationIssue> issues = new ArrayList<>();
 
         List<FurnitureGeometry> furnitureGeometries = new ArrayList<>();
@@ -235,6 +257,8 @@ public class RoomService {
         for (GeometryValidationIssue issue : issues) {
             log.debug("Geometry Engine: room {} - {}: {}", room.getId(), issue.code(), issue.message());
         }
+
+        return issues;
     }
 
     private static WallGeometry toWallGeometry(Wall wall) {
