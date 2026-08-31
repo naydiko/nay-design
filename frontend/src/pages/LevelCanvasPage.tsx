@@ -37,6 +37,7 @@ import {
   zoomAt,
   type ViewTransform,
 } from "../canvas/canvasView";
+import { dist, projectOntoSegment } from "../canvas/geometryMath";
 
 // ---- Local geometry model ----
 interface LocalNode {
@@ -93,28 +94,12 @@ const CANVAS_H = 700;
 const ORIGIN_X = CANVAS_W / 2;
 const ORIGIN_Y = CANVAS_H / 2;
 
-function dist(ax: number, ay: number, bx: number, by: number) {
-  return Math.hypot(ax - bx, ay - by);
-}
 function newId() {
   return crypto.randomUUID();
 }
 function isTypingTarget(target: EventTarget | null) {
   const el = target as HTMLElement | null;
   return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
-}
-
-/** Projects point p onto segment ab, returning the clamped t in [0,1], the
- * distance from p to the segment, and the projected point. */
-function projectOntoSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number) {
-  const dx = bx - ax;
-  const dy = by - ay;
-  const lenSq = dx * dx + dy * dy;
-  let t = lenSq === 0 ? 0 : ((px - ax) * dx + (py - ay) * dy) / lenSq;
-  t = Math.max(0, Math.min(1, t));
-  const projX = ax + t * dx;
-  const projY = ay + t * dy;
-  return { t, distance: dist(px, py, projX, projY), x: projX, y: projY };
 }
 
 function emptyState(): GeometryState {

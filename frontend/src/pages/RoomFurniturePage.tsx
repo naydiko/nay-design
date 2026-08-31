@@ -35,6 +35,7 @@ import {
   zoomAt,
   type ViewTransform,
 } from "../canvas/canvasView";
+import { normalizeAngle, toLocalFrame } from "../canvas/geometryMath";
 
 interface LocalPlacement {
   clientId: string;
@@ -69,26 +70,9 @@ const ROOM_BOUNDS_MM = {
 function newId() {
   return crypto.randomUUID();
 }
-function normalizeAngle(deg: number) {
-  let a = deg % 360;
-  if (a < 0) a += 360;
-  return a;
-}
 function isTypingTarget(target: EventTarget | null) {
   const el = target as HTMLElement | null;
   return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
-}
-
-/** Converts a point in mm-space into a placement's local (unrotated) frame,
- * so hit-testing can use a simple axis-aligned bounds check. */
-function toLocalFrame(px: number, py: number, cx: number, cy: number, angleDeg: number) {
-  const rad = (-angleDeg * Math.PI) / 180;
-  const dx = px - cx;
-  const dy = py - cy;
-  return {
-    lx: dx * Math.cos(rad) - dy * Math.sin(rad),
-    ly: dx * Math.sin(rad) + dy * Math.cos(rad),
-  };
 }
 
 export default function RoomFurniturePage() {
