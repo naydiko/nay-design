@@ -4,6 +4,8 @@ import com.naydiko.backend.domain.entity.FurniturePlacement;
 import com.naydiko.backend.domain.entity.Level;
 import com.naydiko.backend.domain.entity.Product;
 import com.naydiko.backend.domain.entity.Room;
+import com.naydiko.backend.domain.entity.Wall;
+import com.naydiko.backend.domain.enums.OpeningType;
 import com.naydiko.backend.domain.repository.FurniturePlacementRepository;
 import com.naydiko.backend.domain.repository.LevelRepository;
 import com.naydiko.backend.domain.repository.ProductRepository;
@@ -14,6 +16,16 @@ import com.naydiko.backend.dto.request.UpdateRoomRequest;
 import com.naydiko.backend.dto.response.FurniturePlacementResponse;
 import com.naydiko.backend.dto.response.RoomResponse;
 import com.naydiko.backend.exception.ResourceNotFoundException;
+import com.naydiko.backend.geometry.GeometryEngine;
+import com.naydiko.backend.geometry.model.BoundingBox2D;
+import com.naydiko.backend.geometry.model.FurnitureGeometry;
+import com.naydiko.backend.geometry.model.GeometryValidationIssue;
+import com.naydiko.backend.geometry.model.OpeningGeometry;
+import com.naydiko.backend.geometry.model.RoomBoundary;
+import com.naydiko.backend.geometry.model.WallGeometry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -28,24 +40,39 @@ import java.util.stream.Collectors;
 /**
  * Business logic for managing {@link Room}s within a {@link Level}, including
  * the furniture placements within each room.
+ *
+ * <p>Furniture placements are validated (room fit, wall intersections,
+ * furniture-furniture intersections, door clearance) via the
+ * {@link GeometryEngine} on every save. Stage 1 does not prevent overlapping
+ * placements — the canvas allows free positioning — so these findings are
+ * logged as warnings rather than rejected; see {@link LevelGeometryService}
+ * for the (blocking) structural wall/opening validation.
  */
 @Service
 @Transactional(readOnly = true)
 public class RoomService {
 
+    private static final Logger log = LoggerFactory.getLogger(RoomService.class);
+
     private final RoomRepository roomRepository;
     private final LevelRepository levelRepository;
     private final ProductRepository productRepository;
     private final FurniturePlacementRepository furniturePlacementRepository;
+    private final GeometryEngine geometryEngine;
+    private final double doorClearanceMm;
 
     public RoomService(RoomRepository roomRepository,
                         LevelRepository levelRepository,
                         ProductRepository productRepository,
-                        FurniturePlacementRepository furniturePlacementRepository) {
+                        FurniturePlacementRepository furniturePlacementRepository,
+                        GeometryEngine geometryEngine,
+                        @Value("${app.geometry.door-clearance-mm:700}") double doorClearanceMm) {
         this.roomRepository = roomRepository;
         this.levelRepository = levelRepository;
         this.productRepository = productRepository;
         this.furniturePlacementRepository = furniturePlacementRepository;
+        this.geometryEngine = geometryEngine;
+        this.doorClearanceMm = doorClearanceMm;
     }
 
     @Transactional
@@ -143,9 +170,96 @@ public class RoomService {
                 .toList();
         furniturePlacementRepository.deleteAll(toRemove);
 
+        // Geometry Engine: advisory-only for Stage 1 (fit/intersections/door
+        // clearance are logged, not blocking — the canvas does not yet
+        // prevent free placement/overlap).
+        validateFurnitureGeometry(room, saved);
+
         return saved.stream()
                 .map(RoomService::toPlacementResponse)
                 .toList();
+    }
+
+    /**
+     * Runs the Geometry Engine over a room's freshly-saved furniture layout:
+     * missing/invalid product dimensions, room fit, wall intersections,
+     * furniture-furniture intersections, and door clearance. All findings
+     * are logged (Stage 1 does not block saves on spatial overlap).
+     */
+    private void validateFurnitureGeometry(Room room, List<FurniturePlacement> placements) {
+        List<GeometryValidationIssue> issues = new ArrayList<>();
+
+        List<FurnitureGeometry> furnitureGeometries = new ArrayList<>();
+        for (FurniturePlacement placement : placements) {
+            Product product = placement.getProduct();
+            Double widthMm = product.getWidthMm() != null ? product.getWidthMm().doubleValue() : null;
+            Double depthMm = product.getDepthMm() != null ? product.getDepthMm().doubleValue() : null;
+
+            issues.addAll(com.naydiko.backend.geometry.FurnitureGeometryValidator.validateHasDimensions(
+                    placement.getId(), widthMm, depthMm));
+            if (widthMm == null || depthMm == null || widthMm <= 0 || depthMm <= 0) {
+                continue;
+            }
+
+            furnitureGeometries.add(new FurnitureGeometry(
+                    placement.getId(),
+                    product.getId(),
+                    placement.getXMm().doubleValue(),
+                    placement.getYMm().doubleValue(),
+                    widthMm,
+                    depthMm,
+                    placement.getRotationAngle().doubleValue(),
+                    placement.getScale().doubleValue(),
+                    placement.isLocked()
+            ));
+        }
+
+        List<WallGeometry> roomWalls = room.getWalls().stream()
+                .map(RoomService::toWallGeometry)
+                .toList();
+        BoundingBox2D roomBoundingBox = roomWalls.isEmpty()
+                ? null
+                : com.naydiko.backend.geometry.RoomGeometryCalculator.boundingBox(new RoomBoundary(room.getId(), roomWalls));
+
+        issues.addAll(geometryEngine.validateFurniture(furnitureGeometries, roomBoundingBox, roomWalls).issues());
+
+        List<OpeningGeometry> doors = room.getWalls().stream()
+                .flatMap(wall -> wall.getOpenings().stream())
+                .filter(opening -> opening.getType() == OpeningType.DOOR)
+                .map(RoomService::toOpeningGeometry)
+                .toList();
+        Map<UUID, WallGeometry> wallsById = roomWalls.stream()
+                .collect(Collectors.toMap(WallGeometry::id, Function.identity()));
+        issues.addAll(geometryEngine.validateDoorClearances(doors, wallsById, furnitureGeometries, doorClearanceMm).issues());
+
+        for (GeometryValidationIssue issue : issues) {
+            log.debug("Geometry Engine: room {} - {}: {}", room.getId(), issue.code(), issue.message());
+        }
+    }
+
+    private static WallGeometry toWallGeometry(Wall wall) {
+        return new WallGeometry(
+                wall.getId(),
+                wall.getStartNode().getId(),
+                wall.getEndNode().getId(),
+                wall.getStartNode().getXMm().doubleValue(),
+                wall.getStartNode().getYMm().doubleValue(),
+                wall.getEndNode().getXMm().doubleValue(),
+                wall.getEndNode().getYMm().doubleValue(),
+                wall.getThicknessMm().doubleValue(),
+                wall.getHeightMm().doubleValue()
+        );
+    }
+
+    private static OpeningGeometry toOpeningGeometry(com.naydiko.backend.domain.entity.Opening opening) {
+        return new OpeningGeometry(
+                opening.getId(),
+                opening.getWall().getId(),
+                opening.getType().name(),
+                opening.getOffsetFromStartMm().doubleValue(),
+                opening.getWidthMm().doubleValue(),
+                opening.getHeightMm().doubleValue()
+        );
     }
 
     private Room findRoomOrThrow(UUID id) {

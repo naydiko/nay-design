@@ -22,11 +22,20 @@ import com.naydiko.backend.dto.response.OpeningResponse;
 import com.naydiko.backend.dto.response.RoomGeometryResponse;
 import com.naydiko.backend.dto.response.RoomWallResponse;
 import com.naydiko.backend.dto.response.WallResponse;
+import com.naydiko.backend.exception.GeometryValidationException;
 import com.naydiko.backend.exception.ResourceNotFoundException;
+import com.naydiko.backend.geometry.GeometryEngine;
+import com.naydiko.backend.geometry.model.GeometryValidationIssue;
+import com.naydiko.backend.geometry.model.OpeningGeometry;
+import com.naydiko.backend.geometry.model.RoomBoundary;
+import com.naydiko.backend.geometry.model.WallGeometry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -43,29 +52,38 @@ import java.util.stream.Collectors;
  * <p>This treats the entire geometry as one logical document from the
  * frontend's perspective: the canvas edits geometry locally and saves the
  * complete state in a single request, rather than issuing individual CRUD
- * calls per node/wall/opening/room. No geometry engine logic (collision
- * detection, room-polygon derivation, snapping, etc.) is performed here.
+ * calls per node/wall/opening/room. Structural geometry validation
+ * (wall length/thickness/height, opening bounds, room closure) is delegated
+ * to the {@link GeometryEngine}; error-level findings abort the save (the
+ * transaction is rolled back) via {@link GeometryValidationException}. No
+ * collision detection, room-polygon derivation, or snapping is performed
+ * here — see {@link RoomService} for furniture-related Geometry Engine checks.
  */
 @Service
 @Transactional(readOnly = true)
 public class LevelGeometryService {
+
+    private static final Logger log = LoggerFactory.getLogger(LevelGeometryService.class);
 
     private final LevelRepository levelRepository;
     private final NodeRepository nodeRepository;
     private final WallRepository wallRepository;
     private final OpeningRepository openingRepository;
     private final RoomRepository roomRepository;
+    private final GeometryEngine geometryEngine;
 
     public LevelGeometryService(LevelRepository levelRepository,
                                  NodeRepository nodeRepository,
                                  WallRepository wallRepository,
                                  OpeningRepository openingRepository,
-                                 RoomRepository roomRepository) {
+                                 RoomRepository roomRepository,
+                                 GeometryEngine geometryEngine) {
         this.levelRepository = levelRepository;
         this.nodeRepository = nodeRepository;
         this.wallRepository = wallRepository;
         this.openingRepository = openingRepository;
         this.roomRepository = roomRepository;
+        this.geometryEngine = geometryEngine;
     }
 
     public LevelGeometryResponse getGeometry(UUID levelId) {
@@ -163,6 +181,12 @@ public class LevelGeometryService {
         }
         openingRepository.flush();
 
+        // Geometry Engine: validate structural wall/opening geometry before
+        // committing anything further. Error-severity issues abort the save
+        // (an unchecked exception rolls back this whole transaction, so
+        // nothing saved above is persisted either).
+        validateWallsAndOpenings(wallById, openingById);
+
         // Remove openings that are no longer present in the submitted geometry.
         List<Opening> openingsToRemove = existingOpenings.values().stream()
                 .filter(o -> !openingById.containsKey(o.getId()))
@@ -202,6 +226,11 @@ public class LevelGeometryService {
         }
         roomRepository.flush();
 
+        // Geometry Engine: room-closure is advisory only (many valid
+        // in-progress rooms are not yet fully enclosed), so we log it rather
+        // than block the save.
+        logRoomClosureWarnings(roomById.values());
+
         // Remove rooms that are no longer present in the submitted geometry.
         List<Room> roomsToRemove = existingRooms.values().stream()
                 .filter(r -> !roomById.containsKey(r.getId()))
@@ -226,6 +255,80 @@ public class LevelGeometryService {
         nodeRepository.flush();
 
         return getGeometry(levelId);
+    }
+
+    /**
+     * Runs the Geometry Engine's structural validation over the walls and
+     * openings just upserted for this save, throwing
+     * {@link GeometryValidationException} (aborting/rolling back the save)
+     * if any error-severity issue is found.
+     */
+    private void validateWallsAndOpenings(Map<UUID, Wall> wallById, Map<UUID, Opening> openingById) {
+        List<WallGeometry> wallGeometries = wallById.values().stream()
+                .map(LevelGeometryService::toWallGeometry)
+                .toList();
+        Map<UUID, Double> wallLengthsById = wallGeometries.stream()
+                .collect(Collectors.toMap(WallGeometry::id, WallGeometry::lengthMm));
+
+        List<OpeningGeometry> openingGeometries = openingById.values().stream()
+                .map(LevelGeometryService::toOpeningGeometry)
+                .toList();
+
+        List<GeometryValidationIssue> issues = new ArrayList<>();
+        issues.addAll(geometryEngine.validateWalls(wallGeometries).issues());
+        issues.addAll(geometryEngine.validateOpenings(openingGeometries, wallLengthsById).issues());
+
+        if (!issues.isEmpty()) {
+            log.debug("Geometry Engine found {} issue(s) while saving level geometry", issues.size());
+        }
+
+        List<GeometryValidationIssue> errors = issues.stream()
+                .filter(i -> i.severity() == com.naydiko.backend.geometry.model.GeometrySeverity.ERROR)
+                .toList();
+        if (!errors.isEmpty()) {
+            throw new GeometryValidationException(errors);
+        }
+    }
+
+    /**
+     * Logs (but does not block on) room-closure findings: whether each
+     * room's currently-associated walls form a closed boundary.
+     */
+    private void logRoomClosureWarnings(Iterable<Room> rooms) {
+        for (Room room : rooms) {
+            List<WallGeometry> walls = room.getWalls().stream()
+                    .map(LevelGeometryService::toWallGeometry)
+                    .toList();
+            RoomBoundary boundary = new RoomBoundary(room.getId(), walls);
+            for (GeometryValidationIssue issue : geometryEngine.analyzeRoom(boundary).issues()) {
+                log.debug("Geometry Engine: room {} - {}: {}", room.getId(), issue.code(), issue.message());
+            }
+        }
+    }
+
+    private static WallGeometry toWallGeometry(Wall wall) {
+        return new WallGeometry(
+                wall.getId(),
+                wall.getStartNode().getId(),
+                wall.getEndNode().getId(),
+                wall.getStartNode().getXMm().doubleValue(),
+                wall.getStartNode().getYMm().doubleValue(),
+                wall.getEndNode().getXMm().doubleValue(),
+                wall.getEndNode().getYMm().doubleValue(),
+                wall.getThicknessMm().doubleValue(),
+                wall.getHeightMm().doubleValue()
+        );
+    }
+
+    private static OpeningGeometry toOpeningGeometry(Opening opening) {
+        return new OpeningGeometry(
+                opening.getId(),
+                opening.getWall().getId(),
+                opening.getType().name(),
+                opening.getOffsetFromStartMm().doubleValue(),
+                opening.getWidthMm().doubleValue(),
+                opening.getHeightMm().doubleValue()
+        );
     }
 
     /**

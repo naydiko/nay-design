@@ -45,6 +45,27 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.BAD_REQUEST, ex.getMessage(), request);
     }
 
+    @ExceptionHandler(GeometryValidationException.class)
+    public ResponseEntity<ErrorResponse> handleGeometryValidation(
+            GeometryValidationException ex, HttpServletRequest request) {
+
+        List<ErrorResponse.FieldError> issues = ex.getIssues().stream()
+                .map(issue -> new ErrorResponse.FieldError(
+                        issue.code().name(),
+                        issue.severity() + ": " + issue.message()
+                                + (issue.relatedEntityId() != null ? " (entity: " + issue.relatedEntityId() + ")" : "")))
+                .toList();
+
+        ErrorResponse body = ErrorResponse.of(
+                HttpStatus.BAD_REQUEST.value(),
+                HttpStatus.BAD_REQUEST.getReasonPhrase(),
+                "Geometry validation failed",
+                request.getRequestURI(),
+                issues
+        );
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
+    }
+
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ErrorResponse> handleIllegalArgument(IllegalArgumentException ex, HttpServletRequest request) {
         return build(HttpStatus.BAD_REQUEST, ex.getMessage(), request);
