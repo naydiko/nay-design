@@ -26,6 +26,7 @@ import type {
   WallKind,
 } from "../api/types";
 import ValidationPanel from "../components/ValidationPanel";
+import { SAVE_STATE_LABELS, useAutosave } from "../hooks/useAutosave";
 import {
   fitView,
   formatLength,
@@ -133,9 +134,7 @@ export default function LevelCanvasPage() {
   const [wallDrawStart, setWallDrawStart] = useState<string | null>(null); // clientId of pending start node
   const [previewMm, setPreviewMm] = useState<{ xMm: number; yMm: number } | null>(null);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<GeometryIssue[]>([]);
 
   const [view, setView] = useState<ViewTransform>({ zoom: 1, panXPx: 0, panYPx: 0 });
@@ -150,7 +149,12 @@ export default function LevelCanvasPage() {
   } | null>(null);
   const panRef = useRef<{ startXPx: number; startYPx: number; startPan: ViewTransform } | null>(null);
 
-  const dirty = past.length > 0;
+  // Indirection so the autosave hook can be wired up before `persistGeometry`
+  // (which needs the hook's own getGeneration/isStale) is defined below.
+  const persistRef = useRef<() => Promise<void>>(async () => {});
+  const { saveState, markDirty, saveNow, getGeneration, isStale } = useAutosave({
+    save: () => persistRef.current(),
+  });
 
   const toPx = useCallback(
     (xMm: number, yMm: number) => makeToPx(BASE_PX_PER_MM, view, ORIGIN_X, ORIGIN_Y)(xMm, yMm),
@@ -219,6 +223,7 @@ export default function LevelCanvasPage() {
     setPast((p) => [...p, state]);
     setFuture([]);
     setState(next);
+    markDirty();
   }
   const undo = useCallback(() => {
     setPast((p) => {
@@ -497,6 +502,7 @@ export default function LevelCanvasPage() {
       setPast((p) => [...p, drag.beforeState]);
       setFuture([]);
       dragRef.current = null;
+      markDirty();
     }
   }
 
@@ -644,12 +650,15 @@ export default function LevelCanvasPage() {
 
   // ---- Save (two-phase, since new walls/openings can only reference
   // nodes that already have a server-assigned id) ----
-  async function save() {
+  // Used by both the explicit Save button and the debounced autosave (see
+  // ../hooks/useAutosave.ts); always reads `state` fresh via the closure
+  // recreated on every change (captured through persistRef), and never
+  // overwrites local editor state with a server response if newer edits
+  // happened meanwhile (see `isStale`).
+  const persistGeometry = useCallback(async () => {
     if (!levelId) return;
-    setSaving(true);
-    setStatus(null);
     setError(null);
-    setWarnings([]);
+    const token = getGeneration();
     try {
       let working = state;
 
@@ -707,11 +716,17 @@ export default function LevelCanvasPage() {
         roomWalls: [],
       };
       const finalResponse = await LevelApi.saveGeometry(levelId, finalRequest);
-      setState(fromResponse(finalResponse));
-      setPast([]);
-      setFuture([]);
-      setSelected(null);
-      setStatus("Saved");
+      // Only replace local editor state with the server's response if
+      // nothing changed locally while this request was in flight — otherwise
+      // we'd silently discard newer edits. The autosave hook detects the
+      // same generation mismatch and keeps the document marked "unsaved" so
+      // those newer edits get (re)saved shortly after.
+      if (!isStale(token)) {
+        setState(fromResponse(finalResponse));
+        setPast([]);
+        setFuture([]);
+        setSelected(null);
+      }
       setWarnings(finalResponse.issues ?? []);
     } catch (err) {
       const apiErr = err as { message?: string; issues?: GeometryIssue[] };
@@ -720,10 +735,14 @@ export default function LevelCanvasPage() {
       // the save — surfaced the same way as post-save warnings so they can
       // be inspected/highlighted, even though nothing was persisted.
       setWarnings(apiErr.issues ?? []);
-    } finally {
-      setSaving(false);
+      throw err;
     }
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [levelId, state, getGeneration, isStale]);
+
+  useEffect(() => {
+    persistRef.current = persistGeometry;
+  }, [persistGeometry]);
 
   function findNode(s: GeometryState, clientId: string) {
     return s.nodes.find((n) => n.clientId === clientId) ?? null;
@@ -1011,11 +1030,10 @@ export default function LevelCanvasPage() {
           Redo
         </button>
         <span className="toolbar-sep" />
-        <button className="toolbar-btn primary" onClick={save} disabled={saving}>
-          {saving ? "Saving…" : "Save"}
+        <button className="toolbar-btn primary" onClick={() => void saveNow()} disabled={saveState === "saving"}>
+          {saveState === "saving" ? "Saving…" : "Save"}
         </button>
-        {dirty && <span className="muted">unsaved changes</span>}
-        {status && <span className="muted">{status}</span>}
+        <span className={`save-status save-status-${saveState}`}>{SAVE_STATE_LABELS[saveState]}</span>
       </div>
 
       {error && <div className="error">{error}</div>}

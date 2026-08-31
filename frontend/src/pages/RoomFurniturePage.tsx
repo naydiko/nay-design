@@ -24,6 +24,7 @@ import type {
   VendorResponse,
 } from "../api/types";
 import ValidationPanel from "../components/ValidationPanel";
+import { SAVE_STATE_LABELS, useAutosave } from "../hooks/useAutosave";
 import {
   fitView,
   formatLength,
@@ -107,9 +108,7 @@ export default function RoomFurniturePage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<GeometryIssue[]>([]);
 
   const [view, setView] = useState<ViewTransform>({ zoom: 1, panXPx: 0, panYPx: 0 });
@@ -124,7 +123,12 @@ export default function RoomFurniturePage() {
   } | null>(null);
   const panRef = useRef<{ startXPx: number; startYPx: number; startPan: ViewTransform } | null>(null);
 
-  const dirty = past.length > 0;
+  // Indirection so the autosave hook can be wired up before `persistLayout`
+  // (which needs the hook's own getGeneration/isStale) is defined below.
+  const persistRef = useRef<() => Promise<void>>(async () => {});
+  const { saveState, markDirty, saveNow, getGeneration, isStale } = useAutosave({
+    save: () => persistRef.current(),
+  });
 
   const toPx = useCallback(
     (xMm: number, yMm: number) => makeToPx(BASE_PX_PER_MM, view, ORIGIN_X, ORIGIN_Y)(xMm, yMm),
@@ -199,6 +203,7 @@ export default function RoomFurniturePage() {
     setPast((p) => [...p, placements]);
     setFuture([]);
     setPlacements(next);
+    markDirty();
   }
   const undo = useCallback(() => {
     setPast((p) => {
@@ -339,6 +344,7 @@ export default function RoomFurniturePage() {
       setPast((p) => [...p, drag.before]);
       setFuture([]);
       dragRef.current = null;
+      markDirty();
     }
   }
 
@@ -445,12 +451,15 @@ export default function RoomFurniturePage() {
   }
 
   // ---- Save ----
-  async function save() {
+  // Used by both the explicit Save button and the debounced autosave (see
+  // ../hooks/useAutosave.ts); always reads `placements` fresh via the
+  // closure recreated on every change (captured through persistRef), and
+  // never overwrites local editor state with a server response if newer
+  // edits happened meanwhile (see `isStale`).
+  const persistLayout = useCallback(async () => {
     if (!roomId) return;
-    setSaving(true);
     setError(null);
-    setStatus(null);
-    setWarnings([]);
+    const token = getGeneration();
     try {
       const body: FurniturePlacementRequest[] = placements.map((p) => ({
         id: p.serverId,
@@ -472,32 +481,42 @@ export default function RoomFurniturePage() {
       );
       missingProducts.forEach((p) => productById.set(p.id, p));
 
-      setPlacements(
-        response.map((r) => ({
-          clientId: newId(),
-          serverId: r.id,
-          product: productById.get(r.productId)!,
-          xMm: r.xMm,
-          yMm: r.yMm,
-          zMm: r.zMm,
-          rotationAngle: r.rotationAngle,
-          scale: r.scale,
-          locked: r.locked,
-        }))
-      );
-      setPast([]);
-      setFuture([]);
-      setSelectedId(null);
-      setStatus("Saved");
+      // Only replace local editor state with the server's response if
+      // nothing changed locally while this request was in flight — otherwise
+      // we'd silently discard newer edits. The autosave hook detects the
+      // same generation mismatch and keeps the document marked "unsaved" so
+      // those newer edits get (re)saved shortly after.
+      if (!isStale(token)) {
+        setPlacements(
+          response.map((r) => ({
+            clientId: newId(),
+            serverId: r.id,
+            product: productById.get(r.productId)!,
+            xMm: r.xMm,
+            yMm: r.yMm,
+            zMm: r.zMm,
+            rotationAngle: r.rotationAngle,
+            scale: r.scale,
+            locked: r.locked,
+          }))
+        );
+        setPast([]);
+        setFuture([]);
+        setSelectedId(null);
+      }
       setWarnings(issues);
     } catch (err) {
       const apiErr = err as { message?: string; issues?: GeometryIssue[] };
       setError(apiErr.message ?? "Failed to save furniture layout");
       setWarnings(apiErr.issues ?? []);
-    } finally {
-      setSaving(false);
+      throw err;
     }
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomId, placements, products, getGeneration, isStale]);
+
+  useEffect(() => {
+    persistRef.current = persistLayout;
+  }, [persistLayout]);
 
   // ---- Validation issue highlighting/selection ----
   const issuesByPlacementId = useMemo(() => {
@@ -659,11 +678,10 @@ export default function RoomFurniturePage() {
           Redo
         </button>
         <span className="toolbar-sep" />
-        <button className="toolbar-btn primary" onClick={save} disabled={saving}>
-          {saving ? "Saving…" : "Save"}
+        <button className="toolbar-btn primary" onClick={() => void saveNow()} disabled={saveState === "saving"}>
+          {saveState === "saving" ? "Saving…" : "Save"}
         </button>
-        {dirty && <span className="muted">unsaved changes</span>}
-        {status && <span className="muted">{status}</span>}
+        <span className={`save-status save-status-${saveState}`}>{SAVE_STATE_LABELS[saveState]}</span>
       </div>
 
       {error && <div className="error">{error}</div>}
