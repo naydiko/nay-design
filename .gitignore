@@ -1,0 +1,17 @@
+# Environment files (real secrets/config) — never commit these.
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc logs kept at repo root during development
+*.log
+
