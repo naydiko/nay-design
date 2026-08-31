@@ -2,18 +2,23 @@
 import { api } from "./client";
 import type {
   AuthResponse,
+  ChangePasswordRequest,
   CreateLevelRequest,
   CreateProjectRequest,
   CreateRoomRequest,
+  ForgotPasswordRequest,
   FurniturePlacementRequest,
   FurniturePlacementResponse,
+  GoogleLoginRequest,
   LevelGeometryRequest,
   LevelGeometryResponse,
   LevelResponse,
   LoginRequest,
+  MessageResponse,
   ProductResponse,
   ProjectResponse,
   RegisterRequest,
+  ResetPasswordRequest,
   RoomPlacementsSaveResponse,
   RoomResponse,
   UpdateLevelRequest,
@@ -27,12 +32,20 @@ import type {
 export const AuthApi = {
   register: (body: RegisterRequest) => api.post<AuthResponse>("/api/auth/register", body),
   login: (body: LoginRequest) => api.post<AuthResponse>("/api/auth/login", body),
+  loginWithGoogle: (body: GoogleLoginRequest) => api.post<AuthResponse>("/api/auth/google", body),
   me: () => api.get<UserResponse>("/api/me"),
+  changePassword: (body: ChangePasswordRequest) =>
+    api.post<MessageResponse>("/api/auth/change-password", body),
+  forgotPassword: (body: ForgotPasswordRequest) =>
+    api.post<MessageResponse>("/api/auth/forgot-password", body),
+  resetPassword: (body: ResetPasswordRequest) =>
+    api.post<MessageResponse>("/api/auth/reset-password", body),
+  verifyEmail: (token: string) =>
+    api.get<MessageResponse>(`/api/auth/verify-email?token=${encodeURIComponent(token)}`),
 };
 
 export const ProjectApi = {
-  list: (ownerId: UUID) =>
-    api.get<ProjectResponse[]>(`/api/projects?ownerId=${encodeURIComponent(ownerId)}`),
+  list: () => api.get<ProjectResponse[]>("/api/projects"),
   get: (id: UUID) => api.get<ProjectResponse>(`/api/projects/${id}`),
   create: (body: CreateProjectRequest) => api.post<ProjectResponse>("/api/projects", body),
   update: (id: UUID, body: UpdateProjectRequest) =>

@@ -23,18 +23,22 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * Integration tests for the Project CRUD API ({@code /api/projects}).
+ *
+ * <p>Ownership is always derived from the authenticated caller (never a
+ * client-supplied field), so every project created in these tests is owned
+ * by whichever user's bearer token was used to create it.
  */
 class ProjectControllerIntegrationTest extends AbstractIntegrationTest {
 
     @Test
-    void create_returnsCreatedProjectWithLocationHeader() throws Exception {
+    void create_returnsCreatedProjectOwnedByCaller() throws Exception {
         User owner = createActiveUser("project-owner");
         CreateProjectRequest request = new CreateProjectRequest(
-                owner.getId(), "Downtown Loft", "A bright loft renovation", ProjectType.RENOVATION,
+                "Downtown Loft", "A bright loft renovation", ProjectType.RENOVATION,
                 new BigDecimal("1000.00"), new BigDecimal("5000.00"), "USD");
 
         mockMvc.perform(post("/api/projects")
-                        .header("Authorization", bearer(createUserAndToken("project-caller")))
+                        .header("Authorization", bearer(tokenFor(owner)))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isCreated())
@@ -48,22 +52,9 @@ class ProjectControllerIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void create_unknownOwner_returnsNotFound() throws Exception {
-        CreateProjectRequest request = new CreateProjectRequest(
-                UUID.randomUUID(), "Orphan Project", null, ProjectType.OTHER, null, null, null);
-
-        mockMvc.perform(post("/api/projects")
-                        .header("Authorization", bearer(createUserAndToken("project-caller")))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(request)))
-                .andExpect(status().isNotFound());
-    }
-
-    @Test
     void create_blankName_returnsBadRequest() throws Exception {
-        User owner = createActiveUser("project-owner");
         CreateProjectRequest request = new CreateProjectRequest(
-                owner.getId(), "  ", null, ProjectType.OTHER, null, null, null);
+                "  ", null, ProjectType.OTHER, null, null, null);
 
         mockMvc.perform(post("/api/projects")
                         .header("Authorization", bearer(createUserAndToken("project-caller")))
@@ -73,17 +64,15 @@ class ProjectControllerIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void list_returnsOnlyProjectsForRequestedOwner() throws Exception {
-        User owner = createActiveUser("project-owner");
-        User otherOwner = createActiveUser("other-owner");
-        String token = bearer(createUserAndToken("project-caller"));
+    void list_returnsOnlyProjectsOwnedByCaller() throws Exception {
+        String token = bearer(createUserAndToken("project-owner"));
+        String otherToken = bearer(createUserAndToken("other-owner"));
 
-        createProject(owner.getId(), "Owner Project A", token);
-        createProject(owner.getId(), "Owner Project B", token);
-        createProject(otherOwner.getId(), "Other Owner Project", token);
+        createProject("Owner Project A", token);
+        createProject("Owner Project B", token);
+        createProject("Other Owner Project", otherToken);
 
-        mockMvc.perform(get("/api/projects").queryParam("ownerId", owner.getId().toString())
-                        .header("Authorization", token))
+        mockMvc.perform(get("/api/projects").header("Authorization", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(2))
                 .andExpect(jsonPath("$[*].name").value(hasItem("Owner Project A")))
@@ -92,9 +81,8 @@ class ProjectControllerIntegrationTest extends AbstractIntegrationTest {
 
     @Test
     void get_returnsProjectById() throws Exception {
-        User owner = createActiveUser("project-owner");
         String token = bearer(createUserAndToken("project-caller"));
-        String id = createProject(owner.getId(), "Fetchable Project", token);
+        String id = createProject("Fetchable Project", token);
 
         mockMvc.perform(get("/api/projects/{id}", id).header("Authorization", token))
                 .andExpect(status().isOk())
@@ -110,10 +98,19 @@ class ProjectControllerIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
+    void get_projectOwnedByAnotherUser_returnsForbidden() throws Exception {
+        String ownerToken = bearer(createUserAndToken("project-owner"));
+        String id = createProject("Someone Else's Project", ownerToken);
+
+        String otherToken = bearer(createUserAndToken("other-user"));
+        mockMvc.perform(get("/api/projects/{id}", id).header("Authorization", otherToken))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
     void update_appliesAllFieldsIncludingStatus() throws Exception {
-        User owner = createActiveUser("project-owner");
         String token = bearer(createUserAndToken("project-caller"));
-        String id = createProject(owner.getId(), "Before Update", token);
+        String id = createProject("Before Update", token);
 
         UpdateProjectRequest update = new UpdateProjectRequest(
                 "After Update", "Updated description", ProjectType.COMMERCIAL, ProjectStatus.ACTIVE,
@@ -136,10 +133,25 @@ class ProjectControllerIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
+    void update_projectOwnedByAnotherUser_returnsForbidden() throws Exception {
+        String ownerToken = bearer(createUserAndToken("project-owner"));
+        String id = createProject("Not Yours", ownerToken);
+
+        UpdateProjectRequest update = new UpdateProjectRequest(
+                "Hijacked", null, ProjectType.OTHER, ProjectStatus.DRAFT, null, null, null);
+
+        String otherToken = bearer(createUserAndToken("other-user"));
+        mockMvc.perform(put("/api/projects/{id}", id)
+                        .header("Authorization", otherToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(update)))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
     void delete_removesProjectSoItIsNoLongerFetchable() throws Exception {
-        User owner = createActiveUser("project-owner");
         String token = bearer(createUserAndToken("project-caller"));
-        String id = createProject(owner.getId(), "To Be Deleted", token);
+        String id = createProject("To Be Deleted", token);
 
         mockMvc.perform(delete("/api/projects/{id}", id).header("Authorization", token))
                 .andExpect(status().isNoContent());
@@ -148,9 +160,19 @@ class ProjectControllerIntegrationTest extends AbstractIntegrationTest {
                 .andExpect(status().isNotFound());
     }
 
-    private String createProject(UUID ownerId, String name, String bearerToken) throws Exception {
+    @Test
+    void delete_projectOwnedByAnotherUser_returnsForbidden() throws Exception {
+        String ownerToken = bearer(createUserAndToken("project-owner"));
+        String id = createProject("Protected", ownerToken);
+
+        String otherToken = bearer(createUserAndToken("other-user"));
+        mockMvc.perform(delete("/api/projects/{id}", id).header("Authorization", otherToken))
+                .andExpect(status().isForbidden());
+    }
+
+    private String createProject(String name, String bearerToken) throws Exception {
         CreateProjectRequest request = new CreateProjectRequest(
-                ownerId, name, null, ProjectType.RESIDENTIAL, null, null, null);
+                name, null, ProjectType.RESIDENTIAL, null, null, null);
         String body = mockMvc.perform(post("/api/projects")
                         .header("Authorization", bearerToken)
                         .contentType(MediaType.APPLICATION_JSON)
@@ -160,5 +182,7 @@ class ProjectControllerIntegrationTest extends AbstractIntegrationTest {
         return objectMapper.readTree(body).get("id").asText();
     }
 }
+
+
 
 

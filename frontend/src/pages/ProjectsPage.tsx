@@ -28,7 +28,7 @@ export default function ProjectsPage() {
     setLoading(true);
     setError(null);
     try {
-      const list = await ProjectApi.list(user.id);
+      const list = await ProjectApi.list();
       setProjects(list);
     } catch (err) {
       setError((err as { message?: string }).message ?? "Failed to load projects");
@@ -48,7 +48,7 @@ export default function ProjectsPage() {
     setCreating(true);
     setError(null);
     try {
-      await ProjectApi.create({ ownerId: user.id, name: name.trim(), projectType });
+      await ProjectApi.create({ name: name.trim(), projectType });
       setName("");
       await refresh();
     } catch (err) {

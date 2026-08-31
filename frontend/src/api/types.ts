@@ -41,6 +41,28 @@ export interface AuthResponse {
   user: UserResponse;
 }
 
+export interface MessageResponse {
+  message: string;
+}
+
+export interface ChangePasswordRequest {
+  currentPassword: string;
+  newPassword: string;
+}
+
+export interface ForgotPasswordRequest {
+  email: string;
+}
+
+export interface ResetPasswordRequest {
+  token: string;
+  newPassword: string;
+}
+
+export interface GoogleLoginRequest {
+  idToken: string;
+}
+
 // ---- Projects ----
 export type ProjectType =
   | "RESIDENTIAL"
@@ -51,8 +73,9 @@ export type ProjectType =
   | "OTHER";
 export type ProjectStatus = "DRAFT" | "ACTIVE" | "IN_REVIEW" | "COMPLETED" | "ARCHIVED";
 
+// The owner is always the authenticated caller — the backend derives it
+// from the JWT, never from client-supplied input.
 export interface CreateProjectRequest {
-  ownerId: UUID;
   name: string;
   description?: string;
   projectType: ProjectType;

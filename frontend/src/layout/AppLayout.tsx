@@ -13,6 +13,9 @@ export default function AppLayout() {
         {user && (
           <>
             <span className="muted">{user.displayName}</span>
+            <Link to="/change-password" className="link-button">
+              Change password
+            </Link>
             <button className="link-button" onClick={logout}>
               Log out
             </button>

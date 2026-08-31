@@ -32,7 +32,7 @@ describe("ProjectsPage", () => {
     vi.mocked(ProjectApi.list).mockResolvedValue([]);
     renderPage();
     expect(await screen.findByText(/no projects yet/i)).toBeInTheDocument();
-    expect(ProjectApi.list).toHaveBeenCalledWith(mockUser.id);
+    expect(ProjectApi.list).toHaveBeenCalledWith();
   });
 
   it("lists the owner's projects", async () => {
@@ -58,7 +58,6 @@ describe("ProjectsPage", () => {
 
     await waitFor(() =>
       expect(ProjectApi.create).toHaveBeenCalledWith({
-        ownerId: mockUser.id,
         name: "My House",
         projectType: "RESIDENTIAL",
       })
@@ -72,4 +71,6 @@ describe("ProjectsPage", () => {
     expect(await screen.findByText("Failed to load projects")).toBeInTheDocument();
   });
 });
+
+
 

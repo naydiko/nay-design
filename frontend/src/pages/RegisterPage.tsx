@@ -1,9 +1,10 @@
 import { type FormEvent, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
+import GoogleSignInButton from "../auth/GoogleSignInButton";
 
 export default function RegisterPage() {
-  const { register } = useAuth();
+  const { register, loginWithGoogle } = useAuth();
   const navigate = useNavigate();
   const [form, setForm] = useState({
     email: "",
@@ -31,6 +32,16 @@ export default function RegisterPage() {
       setError((err as { message?: string }).message ?? "Registration failed");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function onGoogleCredential(idToken: string) {
+    setError(null);
+    try {
+      await loginWithGoogle(idToken);
+      navigate("/projects", { replace: true });
+    } catch (err) {
+      setError((err as { message?: string }).message ?? "Google sign-in failed");
     }
   }
 
@@ -84,6 +95,7 @@ export default function RegisterPage() {
         <button type="submit" disabled={busy}>
           {busy ? "Creating…" : "Register"}
         </button>
+        <GoogleSignInButton onCredential={onGoogleCredential} />
         <p className="muted">
           Already have an account? <Link to="/login">Log in</Link>
         </p>

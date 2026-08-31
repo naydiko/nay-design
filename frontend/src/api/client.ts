@@ -9,7 +9,14 @@ const USER_KEY = "naydesign.user";
 
 // Paths that are intentionally public: a 401 from these means "bad
 // credentials", not "your session expired" — never auto-redirect for them.
-const PUBLIC_PATHS = ["/api/auth/login", "/api/auth/register"];
+const PUBLIC_PATHS = [
+  "/api/auth/login",
+  "/api/auth/register",
+  "/api/auth/google",
+  "/api/auth/forgot-password",
+  "/api/auth/reset-password",
+  "/api/auth/verify-email",
+];
 
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);

@@ -1,5 +1,6 @@
 package com.naydiko.backend.domain.entity;
 
+import com.naydiko.backend.domain.enums.AuthProvider;
 import com.naydiko.backend.domain.enums.UserRole;
 import com.naydiko.backend.domain.enums.UserStatus;
 import jakarta.persistence.Column;
@@ -73,10 +74,23 @@ public class User {
     @Column(name = "phone_number", length = 40)
     private String phoneNumber;
 
-    @NotBlank
     @Size(max = 255)
-    @Column(name = "password_hash", nullable = false, length = 255)
+    @Column(name = "password_hash", length = 255)
     private String passwordHash;
+
+    /** LOCAL (email/password) or GOOGLE. Google accounts may have a null passwordHash. */
+    @NotNull
+    @Enumerated(EnumType.STRING)
+    @Column(name = "auth_provider", nullable = false, length = 20)
+    @Builder.Default
+    private AuthProvider authProvider = AuthProvider.LOCAL;
+
+    @Size(max = 255)
+    @Column(name = "google_id", length = 255)
+    private String googleId;
+
+    @Column(name = "email_verified_at")
+    private Instant emailVerifiedAt;
 
     @NotNull
     @Enumerated(EnumType.STRING)

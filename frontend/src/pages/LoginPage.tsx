@@ -1,9 +1,10 @@
 import { type FormEvent, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
+import GoogleSignInButton from "../auth/GoogleSignInButton";
 
 export default function LoginPage() {
-  const { login } = useAuth();
+  const { login, loginWithGoogle } = useAuth();
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -21,6 +22,16 @@ export default function LoginPage() {
       setError((err as { message?: string }).message ?? "Login failed");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function onGoogleCredential(idToken: string) {
+    setError(null);
+    try {
+      await loginWithGoogle(idToken);
+      navigate("/projects", { replace: true });
+    } catch (err) {
+      setError((err as { message?: string }).message ?? "Google sign-in failed");
     }
   }
 
@@ -52,6 +63,10 @@ export default function LoginPage() {
         <button type="submit" disabled={busy}>
           {busy ? "Signing in…" : "Log in"}
         </button>
+        <p className="muted">
+          <Link to="/forgot-password">Forgot password?</Link>
+        </p>
+        <GoogleSignInButton onCredential={onGoogleCredential} />
         <p className="muted">
           No account? <Link to="/register">Register</Link>
         </p>

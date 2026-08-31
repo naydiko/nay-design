@@ -7,13 +7,12 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
 import java.math.BigDecimal;
-import java.util.UUID;
 
 /**
- * Payload for creating a new project.
+ * Payload for creating a new project. The owner is always the authenticated
+ * caller — never taken from client-supplied input.
  */
 public record CreateProjectRequest(
-        @NotNull UUID ownerId,
         @NotBlank @Size(max = 160) String name,
         String description,
         @NotNull ProjectType projectType,
@@ -22,4 +21,6 @@ public record CreateProjectRequest(
         @Size(min = 3, max = 3) String currency
 ) {
 }
+
+
 

@@ -8,6 +8,7 @@ interface AuthContextValue {
   loading: boolean;
   login: (body: LoginRequest) => Promise<void>;
   register: (body: RegisterRequest) => Promise<void>;
+  loginWithGoogle: (idToken: string) => Promise<void>;
   logout: () => void;
 }
 
@@ -48,6 +49,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       },
       register: async (body) => {
         const res = await AuthApi.register(body);
+        setToken(res.token);
+        setStoredUser(res.user);
+        setUser(res.user);
+      },
+      loginWithGoogle: async (idToken) => {
+        const res = await AuthApi.loginWithGoogle({ idToken });
         setToken(res.token);
         setStoredUser(res.user);
         setUser(res.user);

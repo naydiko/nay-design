@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.naydiko.backend.domain.entity.User;
 import com.naydiko.backend.domain.enums.UserRole;
 import com.naydiko.backend.domain.enums.UserStatus;
+import com.naydiko.backend.domain.repository.EmailVerificationTokenRepository;
+import com.naydiko.backend.domain.repository.PasswordResetTokenRepository;
 import com.naydiko.backend.domain.repository.UserRepository;
 import com.naydiko.backend.security.CustomUserDetails;
 import com.naydiko.backend.security.JwtService;
@@ -70,6 +72,12 @@ public abstract class AbstractIntegrationTest {
     @Autowired
     protected JwtService jwtService;
 
+    @Autowired
+    protected PasswordResetTokenRepository passwordResetTokenRepository;
+
+    @Autowired
+    protected EmailVerificationTokenRepository emailVerificationTokenRepository;
+
     protected final ObjectMapper objectMapper = new ObjectMapper();
 
     /** Creates (and persists) a new active {@link User} with a unique email. */
@@ -98,4 +106,6 @@ public abstract class AbstractIntegrationTest {
         return tokenFor(createActiveUser(emailPrefix));
     }
 }
+
+
 
