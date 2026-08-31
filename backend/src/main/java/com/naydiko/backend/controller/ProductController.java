@@ -40,11 +40,12 @@ public class ProductController {
         return ResponseEntity.ok(productService.getProduct(id));
     }
 
-    @Operation(summary = "List products, optionally filtered by vendor")
+    @Operation(summary = "List products, optionally filtered by vendor and/or category")
     @GetMapping
     public ResponseEntity<List<ProductResponse>> listProducts(
-            @Parameter(description = "Vendor id") @RequestParam(required = false) UUID vendorId) {
-        return ResponseEntity.ok(productService.listProducts(vendorId));
+            @Parameter(description = "Vendor id") @RequestParam(required = false) UUID vendorId,
+            @Parameter(description = "Product category") @RequestParam(required = false) String category) {
+        return ResponseEntity.ok(productService.listProducts(vendorId, category));
     }
 }
 

@@ -27,6 +27,7 @@ public record ProductResponse(
         BigDecimal priceAmount,
         String priceCurrency,
         ProductStatus status,
+        String primaryImageUrl,
         Instant createdAt,
         Instant updatedAt
 ) {

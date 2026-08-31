@@ -99,15 +99,22 @@ public class ProductService {
     }
 
     /**
-     * Lists products, optionally filtered by vendor.
-     * The optional {@code vendorId} keeps this method's signature stable so
-     * additional filters (category, status, search, pagination, etc.) can be
+     * Lists products, optionally filtered by vendor and/or category.
+     * Keeping both filters optional keeps this method's signature stable so
+     * additional filters (search, status, pagination, etc.) can be
      * introduced later without breaking the existing API contract.
      */
-    public List<ProductResponse> listProducts(UUID vendorId) {
-        List<Product> products = vendorId != null
-                ? productRepository.findByVendorId(vendorId)
-                : productRepository.findAll();
+    public List<ProductResponse> listProducts(UUID vendorId, String category) {
+        List<Product> products;
+        if (vendorId != null && category != null) {
+            products = productRepository.findByVendorIdAndCategoryIgnoreCase(vendorId, category);
+        } else if (vendorId != null) {
+            products = productRepository.findByVendorId(vendorId);
+        } else if (category != null) {
+            products = productRepository.findByCategoryIgnoreCase(category);
+        } else {
+            products = productRepository.findAll();
+        }
 
         return products.stream()
                 .map(ProductService::toResponse)
@@ -131,6 +138,12 @@ public class ProductService {
     }
 
     private static ProductResponse toResponse(Product product) {
+        String primaryImageUrl = product.getMedia().stream()
+                .filter(m -> m.getType() == com.naydiko.backend.domain.enums.ProductMediaType.IMAGE)
+                .findFirst()
+                .map(com.naydiko.backend.domain.entity.ProductMedia::getUrl)
+                .orElse(null);
+
         return new ProductResponse(
                 product.getId(),
                 product.getVendor().getId(),
@@ -149,6 +162,7 @@ public class ProductService {
                 product.getPriceAmount(),
                 product.getPriceCurrency(),
                 product.getStatus(),
+                primaryImageUrl,
                 product.getCreatedAt(),
                 product.getUpdatedAt()
         );

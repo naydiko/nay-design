@@ -4,16 +4,23 @@ import type {
   AuthResponse,
   CreateLevelRequest,
   CreateProjectRequest,
+  CreateRoomRequest,
+  FurniturePlacementRequest,
+  FurniturePlacementResponse,
   LevelGeometryRequest,
   LevelGeometryResponse,
   LevelResponse,
   LoginRequest,
+  ProductResponse,
   ProjectResponse,
   RegisterRequest,
+  RoomResponse,
   UpdateLevelRequest,
   UpdateProjectRequest,
+  UpdateRoomRequest,
   UserResponse,
   UUID,
+  VendorResponse,
 } from "./types";
 
 export const AuthApi = {
@@ -45,5 +52,34 @@ export const LevelApi = {
     api.get<LevelGeometryResponse>(`/api/levels/${levelId}/geometry`),
   saveGeometry: (levelId: UUID, body: LevelGeometryRequest) =>
     api.put<LevelGeometryResponse>(`/api/levels/${levelId}/geometry`, body),
+};
+
+export const RoomApi = {
+  listByLevel: (levelId: UUID) => api.get<RoomResponse[]>(`/api/levels/${levelId}/rooms`),
+  get: (id: UUID) => api.get<RoomResponse>(`/api/rooms/${id}`),
+  create: (levelId: UUID, body: CreateRoomRequest) =>
+    api.post<RoomResponse>(`/api/levels/${levelId}/rooms`, body),
+  update: (id: UUID, body: UpdateRoomRequest) => api.patch<RoomResponse>(`/api/rooms/${id}`, body),
+  remove: (id: UUID) => api.delete<void>(`/api/rooms/${id}`),
+  getPlacements: (roomId: UUID) =>
+    api.get<FurniturePlacementResponse[]>(`/api/rooms/${roomId}/placements`),
+  savePlacements: (roomId: UUID, body: FurniturePlacementRequest[]) =>
+    api.put<FurniturePlacementResponse[]>(`/api/rooms/${roomId}/placements`, body),
+};
+
+export const ProductApi = {
+  list: (params?: { vendorId?: UUID; category?: string }) => {
+    const search = new URLSearchParams();
+    if (params?.vendorId) search.set("vendorId", params.vendorId);
+    if (params?.category) search.set("category", params.category);
+    const qs = search.toString();
+    return api.get<ProductResponse[]>(`/api/products${qs ? `?${qs}` : ""}`);
+  },
+  get: (id: UUID) => api.get<ProductResponse>(`/api/products/${id}`),
+};
+
+export const VendorApi = {
+  list: () => api.get<VendorResponse[]>("/api/vendors"),
+  get: (id: UUID) => api.get<VendorResponse>(`/api/vendors/${id}`),
 };
 

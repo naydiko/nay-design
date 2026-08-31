@@ -115,10 +115,14 @@ export type RoomType =
   | "LIVING_ROOM"
   | "BEDROOM"
   | "KITCHEN"
+  | "DINING_ROOM"
   | "BATHROOM"
-  | "HALLWAY"
   | "OFFICE"
+  | "CHILDREN_ROOM"
+  | "HALLWAY"
+  | "OUTDOOR"
   | "OTHER";
+export type CeilingType = "FLAT" | "SLOPED" | "VAULTED" | "COFFERED" | "OTHER";
 
 export interface NodeDto {
   id: UUID | null;
@@ -179,5 +183,98 @@ export interface LevelGeometryResponse {
 export interface ApiError {
   message: string;
   status?: number;
+}
+
+// ---- Rooms ----
+export interface CreateRoomRequest {
+  name: string;
+  type: RoomType;
+  floorFinish?: string;
+  wallFinish?: string;
+  ceilingFinish?: string;
+  ceilingType?: CeilingType;
+  ceilingHeightMm?: number;
+}
+
+export interface UpdateRoomRequest extends CreateRoomRequest {}
+
+export interface RoomResponse {
+  id: UUID;
+  levelId: UUID;
+  name: string;
+  type: RoomType;
+  floorFinish?: string;
+  wallFinish?: string;
+  ceilingFinish?: string;
+  ceilingType?: CeilingType;
+  ceilingHeightMm?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ---- Vendors ----
+export type VendorStatus = "ACTIVE" | "INACTIVE";
+
+export interface VendorResponse {
+  id: UUID;
+  name: string;
+  country?: string;
+  website?: string;
+  logoUrl?: string;
+  status: VendorStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ---- Products ----
+export type ProductStatus = "DRAFT" | "ACTIVE" | "DISCONTINUED" | "ARCHIVED";
+
+export interface ProductResponse {
+  id: UUID;
+  vendorId: UUID;
+  externalId?: string;
+  name: string;
+  sku?: string;
+  category: string;
+  collection?: string;
+  style?: string;
+  material?: string;
+  color?: string;
+  widthMm?: number;
+  depthMm?: number;
+  heightMm?: number;
+  weightGrams?: number;
+  priceAmount?: number;
+  priceCurrency?: string;
+  status: ProductStatus;
+  primaryImageUrl?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ---- Furniture placements ----
+export interface FurniturePlacementRequest {
+  id: UUID | null;
+  productId: UUID;
+  xMm: number;
+  yMm: number;
+  zMm: number;
+  rotationAngle: number;
+  scale: number;
+  locked: boolean;
+}
+
+export interface FurniturePlacementResponse {
+  id: UUID;
+  roomId: UUID;
+  productId: UUID;
+  xMm: number;
+  yMm: number;
+  zMm: number;
+  rotationAngle: number;
+  scale: number;
+  locked: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 

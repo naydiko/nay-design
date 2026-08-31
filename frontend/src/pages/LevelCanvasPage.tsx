@@ -693,6 +693,12 @@ export default function LevelCanvasPage() {
     <div>
       <p>
         {level && <Link to={`/projects/${level.projectId}`}>← Back to project</Link>}
+        {level && (
+          <>
+            {" · "}
+            <Link to={`/levels/${level.id}/rooms`}>Rooms & furniture →</Link>
+          </>
+        )}
       </p>
       <h1>{level?.name ?? "Level"} — Canvas</h1>
 

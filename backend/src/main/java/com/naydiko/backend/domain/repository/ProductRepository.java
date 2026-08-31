@@ -15,6 +15,10 @@ public interface ProductRepository extends JpaRepository<Product, UUID> {
 
     List<Product> findByVendorId(UUID vendorId);
 
+    List<Product> findByCategoryIgnoreCase(String category);
+
+    List<Product> findByVendorIdAndCategoryIgnoreCase(UUID vendorId, String category);
+
     Optional<Product> findByVendorIdAndExternalId(UUID vendorId, String externalId);
 
     List<Product> findByStatus(ProductStatus status);
