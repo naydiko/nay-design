@@ -15,3 +15,7 @@ Thumbs.db
 # Misc logs kept at repo root during development
 *.log
 
+# Leftover scaffold/backup archive, not part of the application
+backend.zip
+
+
