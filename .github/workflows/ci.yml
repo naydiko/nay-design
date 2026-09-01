@@ -39,7 +39,9 @@ jobs:
       # locally, just preserved here rather than replaced with H2 or a
       # GitHub Actions "services:" Postgres container.
       - name: Build and test (unit + integration + Spring context + Flyway)
-        run: ./mvnw --batch-mode --no-transfer-progress verify
+        run: |
+          chmod +x mvnw
+          ./mvnw --batch-mode --no-transfer-progress verify
 
       - name: Upload test reports (on failure)
         if: failure()
@@ -136,4 +138,5 @@ jobs:
       - name: Tear down (always)
         if: always()
         run: docker compose down -v
+
 
