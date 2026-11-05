@@ -57,7 +57,16 @@ public abstract class AbstractIntegrationTest {
             .withPassword("postgres");
 
     static {
-        POSTGRES.start();
+        try {
+            POSTGRES.start();
+        } catch (RuntimeException ex) {
+            throw new IllegalStateException("""
+                    NayDesign backend integration tests require a working Docker environment for Testcontainers.
+                    Start Docker Desktop (or another Docker Engine), make sure this shell can run `docker ps`,
+                    then rerun `backend/mvnw verify`. Do not replace these tests with H2: they intentionally
+                    exercise PostgreSQL, Flyway, JPA mappings, and database constraints.
+                    """, ex);
+        }
     }
 
     @Autowired

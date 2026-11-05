@@ -18,4 +18,9 @@ Thumbs.db
 # Leftover scaffold/backup archive, not part of the application
 backend.zip
 
+# Build outputs
+backend/target/
+frontend/dist/
+frontend/node_modules/
+
 

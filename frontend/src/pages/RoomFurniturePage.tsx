@@ -15,10 +15,11 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ProductApi, RoomApi, VendorApi } from "../api/endpoints";
+import { LevelApi, ProductApi, RoomApi, VendorApi } from "../api/endpoints";
 import type {
   FurniturePlacementRequest,
   GeometryIssue,
+  LevelGeometryResponse,
   ProductResponse,
   RoomResponse,
   VendorResponse,
@@ -35,7 +36,8 @@ import {
   zoomAt,
   type ViewTransform,
 } from "../canvas/canvasView";
-import { normalizeAngle, toLocalFrame } from "../canvas/geometryMath";
+import { dist, normalizeAngle, toLocalFrame } from "../canvas/geometryMath";
+import { orderClosedBoundary, pointInPolygon } from "../canvas/roomTopology";
 
 interface LocalPlacement {
   clientId: string;
@@ -52,20 +54,40 @@ interface LocalPlacement {
 const BASE_PX_PER_MM = 0.15;
 const CANVAS_W = 900;
 const CANVAS_H = 600;
-const MARGIN = 30;
-const ORIGIN_X = MARGIN;
-const ORIGIN_Y = MARGIN;
+const ORIGIN_X = CANVAS_W / 2;
+const ORIGIN_Y = CANVAS_H / 2;
 const DEFAULT_WIDTH_MM = 500;
 const DEFAULT_DEPTH_MM = 500;
 const SNAP_GRID_MM = 50;
-// Static mm-space room boundary matching the original fixed-scale rectangle,
-// so it pans/zooms together with the placements it outlines.
-const ROOM_BOUNDS_MM = {
-  minX: 0,
-  minY: 0,
-  maxX: (CANVAS_W - 2 * MARGIN) / BASE_PX_PER_MM,
-  maxY: (CANVAS_H - 2 * MARGIN) / BASE_PX_PER_MM,
-};
+
+interface BoundaryPoint {
+  id: string;
+  xMm: number;
+  yMm: number;
+}
+
+interface BoundarySegment {
+  wallId: string;
+  start: BoundaryPoint;
+  end: BoundaryPoint;
+  thicknessMm: number;
+  lengthMm: number;
+}
+
+interface BoundaryOpening {
+  id: string;
+  wallId: string;
+  type: string;
+  offsetFromStartMm: number;
+  widthMm: number;
+}
+
+interface RoomBoundaryView {
+  segments: BoundarySegment[];
+  openings: BoundaryOpening[];
+  polygon: BoundaryPoint[] | null;
+  bounds: { minX: number; minY: number; maxX: number; maxY: number };
+}
 
 function newId() {
   return crypto.randomUUID();
@@ -75,11 +97,88 @@ function isTypingTarget(target: EventTarget | null) {
   return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
 }
 
+export function buildRoomBoundaryFromGeometry(
+  geometry: LevelGeometryResponse,
+  roomId: string
+): RoomBoundaryView | null {
+  const roomWallIds = new Set(geometry.roomWalls.filter((rw) => rw.roomId === roomId).map((rw) => rw.wallId));
+  if (roomWallIds.size === 0) return null;
+
+  const nodesById = new Map(geometry.nodes.map((node) => [node.id, node]));
+  const segments = geometry.walls
+    .filter((wall) => roomWallIds.has(wall.id))
+    .map((wall) => {
+      const startNode = nodesById.get(wall.startNodeId);
+      const endNode = nodesById.get(wall.endNodeId);
+      if (!startNode || !endNode) return null;
+      const start = { id: startNode.id, xMm: startNode.xMm, yMm: startNode.yMm };
+      const end = { id: endNode.id, xMm: endNode.xMm, yMm: endNode.yMm };
+      return {
+        wallId: wall.id,
+        start,
+        end,
+        thicknessMm: wall.thicknessMm,
+        lengthMm: dist(start.xMm, start.yMm, end.xMm, end.yMm),
+      };
+    })
+    .filter((segment): segment is NonNullable<typeof segment> => segment !== null);
+
+  if (segments.length === 0) return null;
+
+  const xs = segments.flatMap((segment) => [segment.start.xMm, segment.end.xMm]);
+  const ys = segments.flatMap((segment) => [segment.start.yMm, segment.end.yMm]);
+  const bounds = {
+    minX: Math.min(...xs),
+    minY: Math.min(...ys),
+    maxX: Math.max(...xs),
+    maxY: Math.max(...ys),
+  };
+
+  const ordered = orderClosedBoundary(
+    geometry.nodes,
+    geometry.walls.filter((wall) => roomWallIds.has(wall.id))
+  );
+  const openings = geometry.openings
+    .filter((opening) => roomWallIds.has(opening.wallId))
+    .map((opening) => ({
+      id: opening.id,
+      wallId: opening.wallId,
+      type: opening.type,
+      offsetFromStartMm: opening.offsetFromStartMm,
+      widthMm: opening.widthMm,
+    }));
+
+  return {
+    segments,
+    openings,
+    polygon: ordered?.polygon ?? null,
+    bounds,
+  };
+}
+
+function placementCorners(p: LocalPlacement, widthMm: number, depthMm: number) {
+  const halfW = widthMm / 2;
+  const halfD = depthMm / 2;
+  const rad = (p.rotationAngle * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  return [
+    { x: -halfW, y: -halfD },
+    { x: halfW, y: -halfD },
+    { x: halfW, y: halfD },
+    { x: -halfW, y: halfD },
+  ].map((corner) => ({
+    xMm: p.xMm + corner.x * cos - corner.y * sin,
+    yMm: p.yMm + corner.x * sin + corner.y * cos,
+  }));
+}
+
 export default function RoomFurniturePage() {
   const { roomId } = useParams<{ roomId: string }>();
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const [room, setRoom] = useState<RoomResponse | null>(null);
+  const [roomBoundary, setRoomBoundary] = useState<RoomBoundaryView | null>(null);
   const [products, setProducts] = useState<ProductResponse[]>([]);
   const [vendors, setVendors] = useState<Map<string, VendorResponse>>(new Map());
   const [categories, setCategories] = useState<string[]>([]);
@@ -130,10 +229,24 @@ export default function RoomFurniturePage() {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    Promise.all([RoomApi.get(roomId), RoomApi.getPlacements(roomId), VendorApi.list(), ProductApi.list()])
-      .then(([r, placementsRes, vendorList, productList]) => {
+    RoomApi.get(roomId)
+      .then((r) =>
+        Promise.all([
+          Promise.resolve(r),
+          RoomApi.getPlacements(roomId),
+          VendorApi.list(),
+          ProductApi.list(),
+          LevelApi.getGeometry(r.levelId),
+        ])
+      )
+      .then(([r, placementsRes, vendorList, productList, geometry]) => {
         if (cancelled) return;
+        const boundary = buildRoomBoundaryFromGeometry(geometry, r.id);
         setRoom(r);
+        setRoomBoundary(boundary);
+        if (boundary?.polygon) {
+          setView(fitView(BASE_PX_PER_MM, boundary.bounds, CANVAS_W, CANVAS_H));
+        }
         setVendors(new Map(vendorList.map((v) => [v.id, v])));
         setProducts(productList);
         setCategories(Array.from(new Set(productList.map((p) => p.category))).sort());
@@ -210,12 +323,17 @@ export default function RoomFurniturePage() {
 
   // ---- Add from catalog ----
   function addToRoom(product: ProductResponse) {
+    if (!roomBoundary?.polygon) {
+      setError("Room geometry is not available. Define or complete the room on the Floor Canvas before placing furniture.");
+      return;
+    }
+    const bounds = roomBoundary.bounds;
     const placement: LocalPlacement = {
       clientId: newId(),
       serverId: null,
       product,
-      xMm: (ROOM_BOUNDS_MM.minX + ROOM_BOUNDS_MM.maxX) / 2,
-      yMm: (ROOM_BOUNDS_MM.minY + ROOM_BOUNDS_MM.maxY) / 2,
+      xMm: (bounds.minX + bounds.maxX) / 2,
+      yMm: (bounds.minY + bounds.maxY) / 2,
       zMm: 0,
       rotationAngle: 0,
       scale: 1,
@@ -353,8 +471,9 @@ export default function RoomFurniturePage() {
   }
 
   function fitToViewport() {
+    if (!roomBoundary?.polygon) return;
     if (placements.length === 0) {
-      setView(fitView(BASE_PX_PER_MM, ROOM_BOUNDS_MM, CANVAS_W, CANVAS_H));
+      setView(fitView(BASE_PX_PER_MM, roomBoundary.bounds, CANVAS_W, CANVAS_H));
       return;
     }
     let minX = Infinity;
@@ -368,10 +487,11 @@ export default function RoomFurniturePage() {
       minY = Math.min(minY, p.yMm - d / 2);
       maxY = Math.max(maxY, p.yMm + d / 2);
     }
-    minX = Math.min(minX, ROOM_BOUNDS_MM.minX);
-    minY = Math.min(minY, ROOM_BOUNDS_MM.minY);
-    maxX = Math.max(maxX, ROOM_BOUNDS_MM.maxX);
-    maxY = Math.max(maxY, ROOM_BOUNDS_MM.maxY);
+    const bounds = roomBoundary.bounds;
+    minX = Math.min(minX, bounds.minX);
+    minY = Math.min(minY, bounds.minY);
+    maxX = Math.max(maxX, bounds.maxX);
+    maxY = Math.max(maxY, bounds.maxY);
     setView(fitView(BASE_PX_PER_MM, { minX, maxX, minY, maxY }, CANVAS_W, CANVAS_H));
   }
 
@@ -515,6 +635,27 @@ export default function RoomFurniturePage() {
     return map;
   }, [warnings]);
 
+  const localBoundaryIssues = useMemo<GeometryIssue[]>(() => {
+    if (!roomBoundary?.polygon) return [];
+    return placements
+      .filter((p) => {
+        const { w, d } = dims(p);
+        return placementCorners(p, w, d).some((corner) => !pointInPolygon(corner, roomBoundary.polygon!));
+      })
+      .map((p) => ({
+        severity: "WARNING",
+        code: "FURNITURE_OUTSIDE_ROOM",
+        message: `${p.product.name} extends outside the room boundary`,
+        relatedEntityId: p.serverId,
+      }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [placements, roomBoundary]);
+
+  const displayedIssues = useMemo(
+    () => [...localBoundaryIssues, ...warnings],
+    [localBoundaryIssues, warnings]
+  );
+
   function selectIssue(issue: GeometryIssue) {
     if (!issue.relatedEntityId) return;
     const placement = placements.find((p) => p.serverId === issue.relatedEntityId);
@@ -553,12 +694,56 @@ export default function RoomFurniturePage() {
       ctx.stroke();
     }
 
-    // room boundary (a fixed mm-space rectangle, panned/zoomed with content)
-    const boundTL = toPx(ROOM_BOUNDS_MM.minX, ROOM_BOUNDS_MM.minY);
-    const boundBR = toPx(ROOM_BOUNDS_MM.maxX, ROOM_BOUNDS_MM.maxY);
-    ctx.strokeStyle = "#ddd";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(boundTL.x, boundTL.y, boundBR.x - boundTL.x, boundBR.y - boundTL.y);
+    // room boundary from the level's actual room-wall geometry
+    if (roomBoundary?.polygon) {
+      ctx.beginPath();
+      roomBoundary.polygon.forEach((point, i) => {
+        const px = toPx(point.xMm, point.yMm);
+        if (i === 0) ctx.moveTo(px.x, px.y);
+        else ctx.lineTo(px.x, px.y);
+      });
+      ctx.closePath();
+      ctx.fillStyle = "rgba(37, 99, 235, 0.04)";
+      ctx.fill();
+    }
+    const boundarySegments = roomBoundary?.segments ?? [];
+    ctx.strokeStyle = "#555";
+    for (const segment of boundarySegments) {
+      const start = toPx(segment.start.xMm, segment.start.yMm);
+      const end = toPx(segment.end.xMm, segment.end.yMm);
+      ctx.lineWidth = Math.max(3, segment.thicknessMm * scale);
+      ctx.beginPath();
+      ctx.moveTo(start.x, start.y);
+      ctx.lineTo(end.x, end.y);
+      ctx.stroke();
+
+      ctx.fillStyle = "#555";
+      ctx.font = "11px sans-serif";
+      ctx.fillText(formatLength(segment.lengthMm, unit), (start.x + end.x) / 2 + 6, (start.y + end.y) / 2 - 6);
+    }
+
+    if (roomBoundary) {
+      const segmentById = new Map(roomBoundary.segments.map((segment) => [segment.wallId, segment]));
+      for (const opening of roomBoundary.openings) {
+        const segment = segmentById.get(opening.wallId);
+        if (!segment) continue;
+        const start = toPx(segment.start.xMm, segment.start.yMm);
+        const end = toPx(segment.end.xMm, segment.end.yMm);
+        const wallLenMm = segment.lengthMm || 1;
+        const t0 = opening.offsetFromStartMm / wallLenMm;
+        const t1 = (opening.offsetFromStartMm + opening.widthMm) / wallLenMm;
+        const hx0 = start.x + (end.x - start.x) * t0;
+        const hy0 = start.y + (end.y - start.y) * t0;
+        const hx1 = start.x + (end.x - start.x) * t1;
+        const hy1 = start.y + (end.y - start.y) * t1;
+        ctx.strokeStyle = opening.type === "DOOR" ? "#a0522d" : "#3b82f6";
+        ctx.lineWidth = Math.max(5, segment.thicknessMm * scale + 2);
+        ctx.beginPath();
+        ctx.moveTo(hx0, hy0);
+        ctx.lineTo(hx1, hy1);
+        ctx.stroke();
+      }
+    }
 
     for (const p of placements) {
       const { w, d } = dims(p);
@@ -621,10 +806,11 @@ export default function RoomFurniturePage() {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [placements, selectedId, view, scale, toPx, issuesByPlacementId]);
+  }, [placements, selectedId, view, scale, toPx, issuesByPlacementId, roomBoundary]);
 
   const selected = placements.find((p) => p.clientId === selectedId) ?? null;
   const selectedDims = useMemo(() => (selected ? dims(selected) : null), [selected]);
+  const geometryReady = !!roomBoundary?.polygon;
 
   if (loading) return <p className="muted">Loading…</p>;
 
@@ -643,7 +829,7 @@ export default function RoomFurniturePage() {
         <button className="toolbar-btn" onClick={() => zoomButton(1.25)} title="Zoom in">
           +
         </button>
-        <button className="toolbar-btn" onClick={fitToViewport} title="Fit design to viewport">
+        <button className="toolbar-btn" onClick={fitToViewport} title="Fit design to viewport" disabled={!geometryReady}>
           Fit
         </button>
         <span className="toolbar-sep" />
@@ -669,10 +855,19 @@ export default function RoomFurniturePage() {
       </div>
 
       {error && <div className="error">{error}</div>}
-      <ValidationPanel title="Layout validation" issues={warnings} onSelect={selectIssue} />
+      {!geometryReady && room && (
+        <div className="warning-banner">
+          Room geometry is not available. Define or complete this room on the Floor Canvas before placing furniture.
+          <p>
+            <Link to={`/levels/${room.levelId}?roomId=${room.id}`}>Open Floor Canvas</Link>
+          </p>
+        </div>
+      )}
+      <ValidationPanel title="Layout validation" issues={displayedIssues} onSelect={selectIssue} />
 
-      <div className="room-layout">
-        <aside className="catalog-panel">
+      {geometryReady && (
+        <div className="room-layout">
+          <aside className="catalog-panel">
           <h3>Catalog</h3>
           <input
             className="catalog-search"
@@ -715,9 +910,9 @@ export default function RoomFurniturePage() {
             ))}
             {filteredProducts.length === 0 && <p className="muted">No products found.</p>}
           </div>
-        </aside>
+          </aside>
 
-        <canvas
+          <canvas
           ref={canvasRef}
           width={CANVAS_W}
           height={CANVAS_H}
@@ -728,9 +923,9 @@ export default function RoomFurniturePage() {
           onPointerUp={onPointerUp}
           onPointerLeave={onPointerUp}
           onContextMenu={(e) => e.preventDefault()}
-        />
+          />
 
-        <aside className="side-panel">
+          <aside className="side-panel">
           <h3>Inspector</h3>
           {!selected && <p className="muted">Select a furniture item to edit it.</p>}
           {selected && (
@@ -789,8 +984,9 @@ export default function RoomFurniturePage() {
               </button>
             </div>
           )}
-        </aside>
-      </div>
+          </aside>
+        </div>
+      )}
       <p className="muted hint">
         Click “Add” on a catalog item to place it in the room. Drag furniture to move it, drag the
         blue handle to rotate. Locked items can’t be moved, rotated, scaled or deleted until

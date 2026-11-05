@@ -3,17 +3,25 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
 }
 .card {
   background: #fff;
   border: 1px solid #e2e2ea;
   border-radius: 10px;
   padding: 28px;
-  width: 360px;
+  width: min(100%, 416px);
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 10px;
   box-shadow: 0 4px 16px rgba(0,0,0,0.06);
+}
+.card h1 {
+  line-height: 1.1;
+  letter-spacing: 0;
+  overflow-wrap: break-word;
 }
 .card label {
   display: flex;
@@ -144,6 +152,25 @@ button:disabled { opacity: 0.6; cursor: default; }
   padding: 12px 14px;
 }
 .card-list-item a { text-decoration: none; color: #111; }
+.room-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.room-row-main {
+  min-width: 0;
+}
+.card-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.card-actions a {
+  color: #2563eb;
+  font-weight: 600;
+}
 .toolbar {
   display: flex;
   align-items: center;
@@ -246,3 +273,37 @@ button:disabled { opacity: 0.6; cursor: default; }
 .catalog-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .catalog-price { font-size: 12px; font-weight: 600; color: #16a34a; }
 
+.room-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  background: rgba(15, 23, 42, 0.28);
+}
+.room-dialog {
+  width: min(360px, calc(100vw - 32px));
+  padding: 20px;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 18px 50px rgba(15, 23, 42, 0.24);
+}
+.room-dialog h2 { margin-top: 0; }
+.room-dialog label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 12px 0;
+}
+.room-dialog input, .room-dialog select {
+  padding: 8px 10px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+}
+.room-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+.room-dialog-actions .primary { background: #2563eb; }

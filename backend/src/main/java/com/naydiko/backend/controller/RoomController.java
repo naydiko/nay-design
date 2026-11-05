@@ -1,6 +1,7 @@
 package com.naydiko.backend.controller;
 
 import com.naydiko.backend.dto.request.CreateRoomRequest;
+import com.naydiko.backend.dto.request.CreateRoomFromBoundaryRequest;
 import com.naydiko.backend.dto.request.FurniturePlacementRequest;
 import com.naydiko.backend.dto.request.UpdateRoomRequest;
 import com.naydiko.backend.dto.response.FurniturePlacementResponse;
@@ -50,6 +51,16 @@ public class RoomController {
             @Parameter(description = "Level id") @PathVariable UUID levelId,
             @Valid @RequestBody CreateRoomRequest request) {
         RoomResponse response = roomService.createRoom(levelId, principal.getId(), request);
+        return ResponseEntity.created(URI.create("/api/rooms/" + response.id())).body(response);
+    }
+
+    @Operation(summary = "Create a room from an existing closed Level wall boundary")
+    @PostMapping("/api/levels/{levelId}/rooms/from-boundary")
+    public ResponseEntity<RoomResponse> createRoomFromBoundary(
+            @AuthenticationPrincipal CustomUserDetails principal,
+            @Parameter(description = "Level id") @PathVariable UUID levelId,
+            @Valid @RequestBody CreateRoomFromBoundaryRequest request) {
+        RoomResponse response = roomService.createRoomFromBoundary(levelId, principal.getId(), request);
         return ResponseEntity.created(URI.create("/api/rooms/" + response.id())).body(response);
     }
 

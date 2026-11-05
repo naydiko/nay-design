@@ -100,8 +100,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      # CI-only, non-production values — same pattern documented in
-      # .env.example. Nothing here is a real secret.
+      # CI-only, non-production values. .env is intentionally untracked;
+      # the committed example contains safe local/CI placeholders only.
       - name: Create CI env file
         run: cp .env.example .env
 

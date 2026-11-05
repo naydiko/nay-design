@@ -6,6 +6,7 @@ import type {
   CreateLevelRequest,
   CreateProjectRequest,
   CreateRoomRequest,
+  CreateRoomFromBoundaryRequest,
   ForgotPasswordRequest,
   FurniturePlacementRequest,
   FurniturePlacementResponse,
@@ -73,6 +74,8 @@ export const RoomApi = {
   get: (id: UUID) => api.get<RoomResponse>(`/api/rooms/${id}`),
   create: (levelId: UUID, body: CreateRoomRequest) =>
     api.post<RoomResponse>(`/api/levels/${levelId}/rooms`, body),
+  createFromBoundary: (levelId: UUID, body: CreateRoomFromBoundaryRequest) =>
+    api.post<RoomResponse>(`/api/levels/${levelId}/rooms/from-boundary`, body),
   update: (id: UUID, body: UpdateRoomRequest) => api.patch<RoomResponse>(`/api/rooms/${id}`, body),
   remove: (id: UUID) => api.delete<void>(`/api/rooms/${id}`),
   getPlacements: (roomId: UUID) =>

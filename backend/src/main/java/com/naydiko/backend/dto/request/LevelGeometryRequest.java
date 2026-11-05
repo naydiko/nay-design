@@ -9,9 +9,9 @@ import java.util.List;
  * The complete geometry document of a {@link com.naydiko.backend.domain.entity.Level},
  * as edited by the frontend canvas and saved in one shot.
  *
- * <p>Entities present with an existing id are updated, entities with a
- * {@code null} id are created, and any previously-persisted entity for the
- * level that is absent from the submitted lists is deleted.
+ * <p>Nodes, walls, and openings are reconciled as structural level geometry.
+ * Rooms are only reconciled when explicitly present so ordinary geometry
+ * saves cannot delete unrelated rooms, room-wall links, or furniture.
  */
 public record LevelGeometryRequest(
         @NotNull List<@Valid NodeRequest> nodes,

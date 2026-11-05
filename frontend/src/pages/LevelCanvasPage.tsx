@@ -13,16 +13,18 @@ import {
   useMemo,
   useRef,
   useState,
+  type FormEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { Link, useParams } from "react-router-dom";
-import { LevelApi } from "../api/endpoints";
+import { Link, useParams, useSearchParams } from "react-router-dom";
+import { LevelApi, RoomApi } from "../api/endpoints";
 import type {
   GeometryIssue,
   LevelGeometryRequest,
   LevelGeometryResponse,
   LevelResponse,
   OpeningType,
+  RoomType,
   WallKind,
 } from "../api/types";
 import ValidationPanel from "../components/ValidationPanel";
@@ -38,6 +40,11 @@ import {
   type ViewTransform,
 } from "../canvas/canvasView";
 import { dist, projectOntoSegment } from "../canvas/geometryMath";
+import {
+  findSmallestClosedBoundary,
+  orderClosedBoundary,
+  type OrderedBoundary,
+} from "../canvas/roomTopology";
 
 // ---- Local geometry model ----
 interface LocalNode {
@@ -65,18 +72,35 @@ interface LocalOpening {
   widthMm: number;
   heightMm: number;
 }
+interface LocalRoom {
+  id: string;
+  name: string;
+  type: RoomType;
+}
+interface LocalRoomWall {
+  roomId: string;
+  wallClientId: string;
+}
 interface GeometryState {
   nodes: LocalNode[];
   walls: LocalWall[];
   openings: LocalOpening[];
+  rooms: LocalRoom[];
+  roomWalls: LocalRoomWall[];
 }
 
-type Tool = "select" | "pan" | "wall" | "door" | "window" | "delete";
+type Tool = "select" | "pan" | "wall" | "door" | "window" | "define-room" | "delete";
 type Selection =
   | { type: "node"; clientId: string }
   | { type: "wall"; clientId: string }
   | { type: "opening"; clientId: string }
   | null;
+interface WallDraftStart {
+  xMm: number;
+  yMm: number;
+  nodeClientId: string | null;
+  chainStartClientId: string | null;
+}
 type LengthUnit = "mm" | "m";
 
 const BASE_PX_PER_MM = 0.15;
@@ -88,6 +112,18 @@ const DEFAULT_WALL_HEIGHT_MM = 2700;
 const DEFAULT_DOOR_WIDTH_MM = 900;
 const DEFAULT_WINDOW_WIDTH_MM = 1200;
 const DEFAULT_OPENING_HEIGHT_MM = 1200;
+const ROOM_TYPES: RoomType[] = [
+  "LIVING_ROOM",
+  "BEDROOM",
+  "KITCHEN",
+  "DINING_ROOM",
+  "BATHROOM",
+  "OFFICE",
+  "CHILDREN_ROOM",
+  "HALLWAY",
+  "OUTDOOR",
+  "OTHER",
+];
 
 const CANVAS_W = 1100;
 const CANVAS_H = 700;
@@ -103,11 +139,13 @@ function isTypingTarget(target: EventTarget | null) {
 }
 
 function emptyState(): GeometryState {
-  return { nodes: [], walls: [], openings: [] };
+  return { nodes: [], walls: [], openings: [], rooms: [], roomWalls: [] };
 }
 
 export default function LevelCanvasPage() {
   const { levelId } = useParams<{ levelId: string }>();
+  const [searchParams] = useSearchParams();
+  const activeRoomId = searchParams.get("roomId");
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const [level, setLevel] = useState<LevelResponse | null>(null);
@@ -116,11 +154,15 @@ export default function LevelCanvasPage() {
   const [future, setFuture] = useState<GeometryState[]>([]);
   const [tool, setTool] = useState<Tool>("select");
   const [selected, setSelected] = useState<Selection>(null);
-  const [wallDrawStart, setWallDrawStart] = useState<string | null>(null); // clientId of pending start node
+  const [wallDraftStart, setWallDraftStart] = useState<WallDraftStart | null>(null);
   const [previewMm, setPreviewMm] = useState<{ xMm: number; yMm: number } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<GeometryIssue[]>([]);
+  const [pendingBoundary, setPendingBoundary] = useState<OrderedBoundary | null>(null);
+  const [roomName, setRoomName] = useState("");
+  const [roomType, setRoomType] = useState<RoomType>("LIVING_ROOM");
+  const [creatingRoom, setCreatingRoom] = useState(false);
 
   const [view, setView] = useState<ViewTransform>({ zoom: 1, panXPx: 0, panYPx: 0 });
   const [snapEnabled, setSnapEnabled] = useState(true);
@@ -160,17 +202,24 @@ export default function LevelCanvasPage() {
     Promise.all([LevelApi.get(levelId), LevelApi.getGeometry(levelId)])
       .then(([lvl, geo]) => {
         if (cancelled) return;
+        const loaded = fromResponse(geo);
         setLevel(lvl);
-        setState(fromResponse(geo));
+        setState(loaded);
         setPast([]);
         setFuture([]);
+        if (activeRoomId) {
+          const boundary = roomBoundary(loaded, activeRoomId);
+          if (boundary) {
+            setView(fitView(BASE_PX_PER_MM, boundaryBounds(boundary), CANVAS_W, CANVAS_H));
+          }
+        }
       })
       .catch((err) => !cancelled && setError((err as { message?: string }).message ?? "Failed to load level"))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [levelId]);
+  }, [levelId, activeRoomId]);
 
   function fromResponse(geo: LevelGeometryResponse): GeometryState {
     const nodes: LocalNode[] = geo.nodes.map((n) => ({
@@ -200,7 +249,20 @@ export default function LevelCanvasPage() {
       widthMm: o.widthMm,
       heightMm: o.heightMm,
     }));
-    return { nodes, walls, openings };
+    const rooms: LocalRoom[] = geo.rooms.map((room) => ({
+      id: room.id,
+      name: room.name,
+      type: room.type,
+    }));
+    const roomIds = new Set(rooms.map((room) => room.id));
+    const roomWalls: LocalRoomWall[] = geo.roomWalls
+      .map((rw) => {
+        const wall = wallByServerId.get(rw.wallId);
+        if (!wall || !roomIds.has(rw.roomId)) return null;
+        return { roomId: rw.roomId, wallClientId: wall.clientId };
+      })
+      .filter((rw): rw is LocalRoomWall => rw !== null);
+    return { nodes, walls, openings, rooms, roomWalls };
   }
 
   // ---- History helpers ----
@@ -299,6 +361,41 @@ export default function LevelCanvasPage() {
     return { ...raw, snappedToNode: false as const };
   }
 
+  function findNodeByPoint(xMm: number, yMm: number, excludeClientId?: string): LocalNode | null {
+    return state.nodes.find((n) => n.clientId !== excludeClientId && dist(n.xMm, n.yMm, xMm, yMm) < 0.01) ?? null;
+  }
+
+  function topologyNodes(geometry: GeometryState) {
+    return geometry.nodes.map((node) => ({ id: node.clientId, xMm: node.xMm, yMm: node.yMm }));
+  }
+
+  function topologyWalls(geometry: GeometryState) {
+    return geometry.walls.map((wall) => ({
+      id: wall.clientId,
+      startNodeId: wall.startClientId,
+      endNodeId: wall.endClientId,
+    }));
+  }
+
+  function roomBoundary(geometry: GeometryState, roomId: string) {
+    const wallIds = new Set(
+      geometry.roomWalls.filter((roomWall) => roomWall.roomId === roomId).map((roomWall) => roomWall.wallClientId)
+    );
+    return orderClosedBoundary(
+      topologyNodes(geometry),
+      topologyWalls(geometry).filter((wall) => wallIds.has(wall.id))
+    );
+  }
+
+  function boundaryBounds(boundary: OrderedBoundary) {
+    return {
+      minX: Math.min(...boundary.polygon.map((point) => point.xMm)),
+      maxX: Math.max(...boundary.polygon.map((point) => point.xMm)),
+      minY: Math.min(...boundary.polygon.map((point) => point.yMm)),
+      maxY: Math.max(...boundary.polygon.map((point) => point.yMm)),
+    };
+  }
+
   // ---- Canvas pointer handlers ----
   function getCanvasPos(e: ReactPointerEvent<HTMLCanvasElement>) {
     const rect = canvasRef.current!.getBoundingClientRect();
@@ -312,6 +409,14 @@ export default function LevelCanvasPage() {
   function onPointerDown(e: ReactPointerEvent<HTMLCanvasElement>) {
     const { x, y } = getCanvasPos(e);
 
+    if (e.button === 2) {
+      if (tool === "wall" && wallDraftStart) {
+        setWallDraftStart(null);
+        setPreviewMm(null);
+      }
+      return;
+    }
+
     // Middle-click, or space+left-click, or the Pan tool: pan the viewport
     // regardless of the active drawing tool.
     if (e.button === 1 || spacePanning || tool === "pan") {
@@ -320,46 +425,97 @@ export default function LevelCanvasPage() {
       return;
     }
 
+    if (tool === "define-room") {
+      const boundary = findSmallestClosedBoundary(topologyNodes(state), topologyWalls(state), toMm(x, y));
+      if (!boundary) {
+        setPendingBoundary(null);
+        setError("No closed room boundary found here.");
+        return;
+      }
+      setError(null);
+      setPendingBoundary(boundary);
+      setRoomName("");
+      setRoomType("LIVING_ROOM");
+      return;
+    }
+
     if (tool === "wall") {
-      const dropped = resolveDropPoint(x, y);
-      if (!wallDrawStart) {
-        let startClientId: string;
-        if (dropped.snappedToNode) {
-          startClientId = nearestSnapNode(x, y)!.clientId;
-        } else {
-          const node: LocalNode = { clientId: newId(), serverId: null, xMm: dropped.xMm, yMm: dropped.yMm, zMm: 0 };
-          commit({ ...state, nodes: [...state.nodes, node] });
-          startClientId = node.clientId;
-        }
-        setWallDrawStart(startClientId);
-        setPreviewMm({ xMm: dropped.xMm, yMm: dropped.yMm });
+      const dropped = resolveDropPoint(x, y, wallDraftStart?.nodeClientId ?? undefined);
+      if (!wallDraftStart) {
+        const startNode = dropped.snappedToNode ? nearestSnapNode(x, y) : null;
+        setWallDraftStart({
+          xMm: dropped.xMm,
+          yMm: dropped.yMm,
+          nodeClientId: startNode?.clientId ?? null,
+          chainStartClientId: startNode?.clientId ?? null,
+        });
+        setPreviewMm(null);
       } else {
         let endClientId: string;
-        let base = state;
-        const snappedNode = nearestSnapNode(x, y);
-        if (snappedNode && snappedNode.clientId !== wallDrawStart) {
-          endClientId = snappedNode.clientId;
-        } else if (snappedNode && snappedNode.clientId === wallDrawStart) {
-          // clicked same node again: cancel
-          setWallDrawStart(null);
+        let startClientId: string;
+        const nodes = [...state.nodes];
+        const draftStartNode =
+          (wallDraftStart.nodeClientId
+            ? state.nodes.find((n) => n.clientId === wallDraftStart.nodeClientId)
+            : null) ?? findNodeByPoint(wallDraftStart.xMm, wallDraftStart.yMm);
+        if (draftStartNode) {
+          startClientId = draftStartNode.clientId;
+        } else {
+          const node: LocalNode = {
+            clientId: newId(),
+            serverId: null,
+            xMm: wallDraftStart.xMm,
+            yMm: wallDraftStart.yMm,
+            zMm: 0,
+          };
+          nodes.push(node);
+          startClientId = node.clientId;
+        }
+
+        const hitNode = dropped.snappedToNode ? nearestSnapNode(x, y, startClientId) : null;
+        const droppedPoint = hitNode ? { xMm: hitNode.xMm, yMm: hitNode.yMm } : dropped;
+        if (dist(wallDraftStart.xMm, wallDraftStart.yMm, droppedPoint.xMm, droppedPoint.yMm) < 0.01) {
+          setWallDraftStart(null);
           setPreviewMm(null);
           return;
+        }
+
+        const coordinateNode = hitNode ? null : findNodeByPoint(droppedPoint.xMm, droppedPoint.yMm, startClientId);
+        const endNode = hitNode ?? coordinateNode;
+        if (endNode) {
+          endClientId = endNode.clientId;
         } else {
-          const node: LocalNode = { clientId: newId(), serverId: null, xMm: dropped.xMm, yMm: dropped.yMm, zMm: 0 };
-          base = { ...state, nodes: [...state.nodes, node] };
+          const node: LocalNode = { clientId: newId(), serverId: null, xMm: droppedPoint.xMm, yMm: droppedPoint.yMm, zMm: 0 };
+          nodes.push(node);
           endClientId = node.clientId;
         }
+        const chainStartClientId = wallDraftStart.chainStartClientId ?? startClientId;
+        const closesLoop = endClientId === chainStartClientId;
         const wall: LocalWall = {
           clientId: newId(),
           serverId: null,
-          startClientId: wallDrawStart,
+          startClientId,
           endClientId,
           thicknessMm: DEFAULT_WALL_THICKNESS_MM,
           heightMm: DEFAULT_WALL_HEIGHT_MM,
           kind: "INTERIOR",
         };
-        commit({ ...base, walls: [...base.walls, wall] });
-        setWallDrawStart(null);
+        const nextState = {
+          ...state,
+          nodes,
+          walls: [...state.walls, wall],
+        };
+        commit(nextState);
+        setWallDraftStart(
+          closesLoop
+            ? null
+            : {
+                xMm: droppedPoint.xMm,
+                yMm: droppedPoint.yMm,
+                nodeClientId: endClientId,
+                chainStartClientId,
+              }
+        );
         setPreviewMm(null);
       }
       return;
@@ -440,8 +596,8 @@ export default function LevelCanvasPage() {
       return;
     }
 
-    if (tool === "wall" && wallDrawStart) {
-      const dropped = resolveDropPoint(x, y, wallDrawStart);
+    if (tool === "wall" && wallDraftStart) {
+      const dropped = resolveDropPoint(x, y, wallDraftStart.nodeClientId ?? undefined);
       setPreviewMm({ xMm: dropped.xMm, yMm: dropped.yMm });
       return;
     }
@@ -533,8 +689,8 @@ export default function LevelCanvasPage() {
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape") {
-        if (wallDrawStart) {
-          setWallDrawStart(null);
+        if (wallDraftStart) {
+          setWallDraftStart(null);
           setPreviewMm(null);
         } else if (panRef.current) {
           panRef.current = null;
@@ -579,7 +735,7 @@ export default function LevelCanvasPage() {
       window.removeEventListener("keyup", onKeyUp);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected, wallDrawStart, tool, undo, redo]);
+  }, [selected, wallDraftStart, tool, undo, redo]);
 
   // ---- Delete helpers (cascade) ----
   function deleteNode(clientId: string) {
@@ -588,9 +744,11 @@ export default function LevelCanvasPage() {
     );
     const wallIds = new Set(wallsToRemove.map((w) => w.clientId));
     commit({
+      ...state,
       nodes: state.nodes.filter((n) => n.clientId !== clientId),
       walls: state.walls.filter((w) => !wallIds.has(w.clientId)),
       openings: state.openings.filter((o) => !wallIds.has(o.wallClientId)),
+      roomWalls: state.roomWalls.filter((rw) => !wallIds.has(rw.wallClientId)),
     });
     setSelected(null);
   }
@@ -599,6 +757,7 @@ export default function LevelCanvasPage() {
       ...state,
       walls: state.walls.filter((w) => w.clientId !== clientId),
       openings: state.openings.filter((o) => o.wallClientId !== clientId),
+      roomWalls: state.roomWalls.filter((rw) => rw.wallClientId !== clientId),
     });
     setSelected(null);
   }
@@ -635,72 +794,67 @@ export default function LevelCanvasPage() {
 
   // ---- Save (two-phase, since new walls/openings can only reference
   // nodes that already have a server-assigned id) ----
-  // Used by both the explicit Save button and the debounced autosave (see
-  // ../hooks/useAutosave.ts); always reads `state` fresh via the closure
-  // recreated on every change (captured through persistRef), and never
-  // overwrites local editor state with a server response if newer edits
-  // happened meanwhile (see `isStale`).
+  /** Persists only Level-owned structural geometry and returns the same local
+   * graph with server ids filled in. Room data is deliberately omitted so an
+   * ordinary canvas save cannot replace RoomWall associations. */
+  const saveStructuralGeometry = useCallback(async (source: GeometryState) => {
+    if (!levelId) throw new Error("Level is not available");
+    let working = source;
+
+    if (working.nodes.some((node) => node.serverId === null)) {
+      const phase1Walls = working.walls.filter(
+        (wall) =>
+          wall.serverId !== null &&
+          findNode(working, wall.startClientId)?.serverId !== null &&
+          findNode(working, wall.endClientId)?.serverId !== null
+      );
+      const phase1WallIds = new Set(phase1Walls.map((wall) => wall.clientId));
+      const phase1Openings = working.openings.filter(
+        (opening) => opening.serverId !== null && phase1WallIds.has(opening.wallClientId)
+      );
+      const response = await LevelApi.saveGeometry(levelId, {
+        nodes: working.nodes.map(toNodeDto),
+        walls: phase1Walls.map((wall) => toWallDto(wall, working)),
+        openings: phase1Openings.map((opening) => toOpeningDto(opening, working)),
+        rooms: [],
+        roomWalls: [],
+      });
+      working = syncServerIds(working, response);
+    }
+
+    if (working.walls.some((wall) => wall.serverId === null)) {
+      const serializableOpenings = working.openings.filter((opening) => {
+        const wall = working.walls.find((candidate) => candidate.clientId === opening.wallClientId);
+        return !!wall?.serverId;
+      });
+      const response = await LevelApi.saveGeometry(levelId, {
+        nodes: working.nodes.map(toNodeDto),
+        walls: working.walls.map((wall) => toWallDto(wall, working)),
+        openings: serializableOpenings.map((opening) => toOpeningDto(opening, working)),
+        rooms: [],
+        roomWalls: [],
+      });
+      working = syncServerIds(working, response);
+    }
+
+    const request: LevelGeometryRequest = {
+      nodes: working.nodes.map(toNodeDto),
+      walls: working.walls.map((wall) => toWallDto(wall, working)),
+      openings: working.openings.map((opening) => toOpeningDto(opening, working)),
+      rooms: [],
+      roomWalls: [],
+    };
+    const response = await LevelApi.saveGeometry(levelId, request);
+    return { working: syncServerIds(working, response), response };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [levelId]);
+
+  // Used by both the explicit Save button and debounced autosave.
   const persistGeometry = useCallback(async () => {
-    if (!levelId) return;
     setError(null);
     const token = getGeneration();
     try {
-      let working = state;
-
-      const hasNewNodes = working.nodes.some((n) => n.serverId === null);
-      if (hasNewNodes) {
-        // Phase 1: persist nodes + only already-persisted walls/openings, to
-        // obtain real ids for brand-new nodes without touching new walls.
-        const phase1Walls = working.walls.filter(
-          (w) =>
-            w.serverId !== null &&
-            findNode(working, w.startClientId)?.serverId !== null &&
-            findNode(working, w.endClientId)?.serverId !== null
-        );
-        const phase1WallIds = new Set(phase1Walls.map((w) => w.clientId));
-        const phase1Openings = working.openings.filter(
-          (o) => o.serverId !== null && phase1WallIds.has(o.wallClientId)
-        );
-
-        const phase1Request: LevelGeometryRequest = {
-          nodes: working.nodes.map(toNodeDto),
-          walls: phase1Walls.map((w) => toWallDto(w, working)),
-          openings: phase1Openings.map((o) => toOpeningDto(o, working)),
-          rooms: [],
-          roomWalls: [],
-        };
-        const phase1Response = await LevelApi.saveGeometry(levelId, phase1Request);
-
-        // Match brand-new nodes to the response by coordinates (safe here:
-        // nothing else about them changed between request and response).
-        const claimed = new Set<string>();
-        working = {
-          ...working,
-          nodes: working.nodes.map((n) => {
-            if (n.serverId !== null) return n;
-            const match = phase1Response.nodes.find(
-              (rn) =>
-                !claimed.has(rn.id) &&
-                Math.abs(rn.xMm - n.xMm) < 0.01 &&
-                Math.abs(rn.yMm - n.yMm) < 0.01 &&
-                Math.abs(rn.zMm - n.zMm) < 0.01
-            );
-            if (match) claimed.add(match.id);
-            return match ? { ...n, serverId: match.id } : n;
-          }),
-        };
-      }
-
-      // Phase 2: send the complete, authoritative geometry now that every
-      // node has a real id.
-      const finalRequest: LevelGeometryRequest = {
-        nodes: working.nodes.map(toNodeDto),
-        walls: working.walls.map((w) => toWallDto(w, working)),
-        openings: working.openings.map((o) => toOpeningDto(o, working)),
-        rooms: [],
-        roomWalls: [],
-      };
-      const finalResponse = await LevelApi.saveGeometry(levelId, finalRequest);
+      const { response: finalResponse } = await saveStructuralGeometry(state);
       // Only replace local editor state with the server's response if
       // nothing changed locally while this request was in flight — otherwise
       // we'd silently discard newer edits. The autosave hook detects the
@@ -723,7 +877,7 @@ export default function LevelCanvasPage() {
       throw err;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [levelId, state, getGeneration, isStale]);
+  }, [state, getGeneration, isStale, saveStructuralGeometry]);
 
   useEffect(() => {
     persistRef.current = persistGeometry;
@@ -757,6 +911,102 @@ export default function LevelCanvasPage() {
       widthMm: o.widthMm,
       heightMm: o.heightMm,
     };
+  }
+  function syncServerIds(local: GeometryState, response: LevelGeometryResponse): GeometryState {
+    const claimedNodeIds = new Set<string>();
+    const nodes = local.nodes.map((node) => {
+      if (node.serverId !== null) return node;
+      const match = response.nodes.find(
+        (rn) =>
+          !claimedNodeIds.has(rn.id) &&
+          Math.abs(rn.xMm - node.xMm) < 0.01 &&
+          Math.abs(rn.yMm - node.yMm) < 0.01 &&
+          Math.abs(rn.zMm - node.zMm) < 0.01
+      );
+      if (match) claimedNodeIds.add(match.id);
+      return match ? { ...node, serverId: match.id } : node;
+    });
+
+    const nodeByClientId = new Map(nodes.map((node) => [node.clientId, node]));
+    const claimedWallIds = new Set<string>();
+    const walls = local.walls.map((wall) => {
+      if (wall.serverId !== null) return wall;
+      const start = nodeByClientId.get(wall.startClientId);
+      const end = nodeByClientId.get(wall.endClientId);
+      if (!start?.serverId || !end?.serverId) return wall;
+      const match = response.walls.find(
+        (rw) =>
+          !claimedWallIds.has(rw.id) &&
+          rw.startNodeId === start.serverId &&
+          rw.endNodeId === end.serverId &&
+          Math.abs(rw.thicknessMm - wall.thicknessMm) < 0.01 &&
+          Math.abs(rw.heightMm - wall.heightMm) < 0.01 &&
+          rw.kind === wall.kind
+      );
+      if (match) claimedWallIds.add(match.id);
+      return match ? { ...wall, serverId: match.id } : wall;
+    });
+
+    const wallByClientId = new Map(walls.map((wall) => [wall.clientId, wall]));
+    const claimedOpeningIds = new Set<string>();
+    const openings = local.openings.map((opening) => {
+      if (opening.serverId !== null) return opening;
+      const wall = wallByClientId.get(opening.wallClientId);
+      if (!wall?.serverId) return opening;
+      const match = response.openings.find(
+        (ro) =>
+          !claimedOpeningIds.has(ro.id) &&
+          ro.wallId === wall.serverId &&
+          ro.type === opening.type &&
+          Math.abs(ro.offsetFromStartMm - opening.offsetFromStartMm) < 0.01 &&
+          Math.abs(ro.widthMm - opening.widthMm) < 0.01 &&
+          Math.abs(ro.heightMm - opening.heightMm) < 0.01
+      );
+      if (match) claimedOpeningIds.add(match.id);
+      return match ? { ...opening, serverId: match.id } : opening;
+    });
+
+    return { ...local, nodes, walls, openings };
+  }
+
+  async function createRoomFromPendingBoundary(event: FormEvent) {
+    event.preventDefault();
+    if (!levelId || !pendingBoundary || !roomName.trim()) return;
+    setCreatingRoom(true);
+    setError(null);
+    try {
+      const { working, response } = await saveStructuralGeometry(state);
+      const boundaryWallClientIds = new Set(pendingBoundary.wallIds);
+      const boundaryWalls = working.walls.filter((wall) => boundaryWallClientIds.has(wall.clientId));
+      const wallIds = boundaryWalls.map((wall) => wall.serverId).filter((id): id is string => id !== null);
+      if (wallIds.length !== pendingBoundary.wallIds.length) {
+        throw new Error("The room boundary could not be persisted. Please save the Level and try again.");
+      }
+
+      const room = await RoomApi.createFromBoundary(levelId, {
+        name: roomName.trim(),
+        type: roomType,
+        wallIds,
+      });
+      setState({
+        ...working,
+        rooms: [...working.rooms, { id: room.id, name: room.name, type: room.type }],
+        roomWalls: [
+          ...working.roomWalls,
+          ...boundaryWalls.map((wall) => ({ roomId: room.id, wallClientId: wall.clientId })),
+        ],
+      });
+      setPast([]);
+      setFuture([]);
+      setSelected(null);
+      setWarnings(response.issues ?? []);
+      setPendingBoundary(null);
+      setRoomName("");
+    } catch (err) {
+      setError((err as { message?: string }).message ?? "Failed to create room");
+    } finally {
+      setCreatingRoom(false);
+    }
   }
 
   // ---- Validation issue highlighting/selection ----
@@ -792,6 +1042,15 @@ export default function LevelCanvasPage() {
       setSelected({ type: "opening", clientId: opening.clientId });
     }
   }
+
+  const locatedRoomBoundary = useMemo(
+    () => (activeRoomId ? roomBoundary(state, activeRoomId) : null),
+    [activeRoomId, state]
+  );
+  const locatedRoomWallIds = useMemo(
+    () => new Set(locatedRoomBoundary?.wallIds ?? []),
+    [locatedRoomBoundary]
+  );
 
   // ---- Rendering ----
   useEffect(() => {
@@ -833,6 +1092,18 @@ export default function LevelCanvasPage() {
     ctx.lineTo(CANVAS_W, originPx.y);
     ctx.stroke();
 
+    if (locatedRoomBoundary) {
+      ctx.beginPath();
+      locatedRoomBoundary.polygon.forEach((point, index) => {
+        const pixel = toPx(point.xMm, point.yMm);
+        if (index === 0) ctx.moveTo(pixel.x, pixel.y);
+        else ctx.lineTo(pixel.x, pixel.y);
+      });
+      ctx.closePath();
+      ctx.fillStyle = "rgba(124, 58, 237, 0.10)";
+      ctx.fill();
+    }
+
     // walls
     for (const w of state.walls) {
       const start = state.nodes.find((n) => n.clientId === w.startClientId);
@@ -841,6 +1112,7 @@ export default function LevelCanvasPage() {
       const sp = toPx(start.xMm, start.yMm);
       const ep = toPx(end.xMm, end.yMm);
       const isSelected = selected?.type === "wall" && selected.clientId === w.clientId;
+      const isLocatedRoomWall = locatedRoomWallIds.has(w.clientId);
       const issue = w.serverId ? issuesByEntityId.get(w.serverId) : undefined;
       ctx.strokeStyle = isSelected
         ? "#2563eb"
@@ -848,7 +1120,9 @@ export default function LevelCanvasPage() {
           ? "#dc2626"
           : issue
             ? "#d97706"
-            : "#333";
+            : isLocatedRoomWall
+              ? "#7c3aed"
+              : "#333";
       ctx.lineWidth = Math.max(2, w.thicknessMm * scale);
       ctx.beginPath();
       ctx.moveTo(sp.x, sp.y);
@@ -914,10 +1188,9 @@ export default function LevelCanvasPage() {
     }
 
     // wall-draw preview
-    if (tool === "wall" && wallDrawStart && previewMm) {
-      const start = state.nodes.find((n) => n.clientId === wallDrawStart);
-      if (start) {
-        const sp = toPx(start.xMm, start.yMm);
+    if (tool === "wall" && wallDraftStart) {
+      const sp = toPx(wallDraftStart.xMm, wallDraftStart.yMm);
+      if (previewMm) {
         const ep = toPx(previewMm.xMm, previewMm.yMm);
         ctx.strokeStyle = "#94a3b8";
         ctx.setLineDash([6, 4]);
@@ -928,12 +1201,16 @@ export default function LevelCanvasPage() {
         ctx.stroke();
         ctx.setLineDash([]);
 
-        const previewLenMm = dist(start.xMm, start.yMm, previewMm.xMm, previewMm.yMm);
+        const previewLenMm = dist(wallDraftStart.xMm, wallDraftStart.yMm, previewMm.xMm, previewMm.yMm);
         ctx.fillStyle = "#475569";
         ctx.fillText(formatLength(previewLenMm, unit), (sp.x + ep.x) / 2 + 6, (sp.y + ep.y) / 2 - 6);
       }
+      ctx.fillStyle = "#111";
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, 4, 0, Math.PI * 2);
+      ctx.fill();
     }
-  }, [state, selected, tool, wallDrawStart, previewMm, view, unit, scale, toPx, issuesByEntityId]);
+  }, [state, selected, tool, wallDraftStart, previewMm, view, unit, scale, toPx, issuesByEntityId, locatedRoomBoundary, locatedRoomWallIds]);
 
   const selectedNode = useMemo(
     () => (selected?.type === "node" ? state.nodes.find((n) => n.clientId === selected.clientId) : null),
@@ -947,6 +1224,10 @@ export default function LevelCanvasPage() {
     () => (selected?.type === "opening" ? state.openings.find((o) => o.clientId === selected.clientId) : null),
     [selected, state.openings]
   );
+  const activeRoom = useMemo(
+    () => (activeRoomId ? state.rooms.find((room) => room.id === activeRoomId) ?? null : null),
+    [activeRoomId, state.rooms]
+  );
   const selectedWallLengthMm = useMemo(() => {
     if (!selectedWall) return null;
     const start = state.nodes.find((n) => n.clientId === selectedWall.startClientId);
@@ -957,7 +1238,14 @@ export default function LevelCanvasPage() {
 
   if (loading) return <p className="muted">Loading…</p>;
 
-  const cursorStyle = tool === "pan" || spacePanning ? "grab" : tool === "select" ? "default" : "crosshair";
+  const cursorStyle =
+    tool === "pan" || spacePanning
+      ? "grab"
+      : tool === "select"
+        ? "default"
+        : tool === "define-room"
+          ? "cell"
+          : "crosshair";
 
   return (
     <div>
@@ -972,18 +1260,34 @@ export default function LevelCanvasPage() {
       </p>
       <h1>{level?.name ?? "Level"} — Canvas</h1>
 
+      {activeRoom && <p className="muted">Located room: {activeRoom.name}</p>}
+      {activeRoom && !locatedRoomBoundary && (
+        <div className="warning-banner">This room boundary is incomplete or invalid.</div>
+      )}
+      {activeRoomId && !activeRoom && (
+        <div className="warning-banner">The selected room was not found on this level.</div>
+      )}
+
       <div className="toolbar">
-        {(["select", "wall", "door", "window", "delete", "pan"] as Tool[]).map((t) => (
+        {([
+          ["select", "Select"],
+          ["wall", "Wall"],
+          ["door", "Door"],
+          ["window", "Window"],
+          ["define-room", "Define room"],
+          ["delete", "Delete"],
+          ["pan", "Pan"],
+        ] as [Tool, string][]).map(([toolId, label]) => (
           <button
-            key={t}
-            className={tool === t ? "toolbar-btn active" : "toolbar-btn"}
+            key={toolId}
+            className={tool === toolId ? "toolbar-btn active" : "toolbar-btn"}
             onClick={() => {
-              setTool(t);
-              setWallDrawStart(null);
+              setTool(toolId);
+              setWallDraftStart(null);
               setPreviewMm(null);
             }}
           >
-            {t[0].toUpperCase() + t.slice(1)}
+            {label}
           </button>
         ))}
         <span className="toolbar-sep" />
@@ -1023,6 +1327,36 @@ export default function LevelCanvasPage() {
 
       {error && <div className="error">{error}</div>}
       <ValidationPanel title="Geometry validation" issues={warnings} onSelect={selectIssue} />
+
+      {pendingBoundary && (
+        <div className="room-dialog-backdrop" role="presentation">
+          <form className="room-dialog" role="dialog" aria-modal="true" aria-labelledby="define-room-title" onSubmit={createRoomFromPendingBoundary}>
+            <h2 id="define-room-title">Define room</h2>
+            <label>
+              Name
+              <input autoFocus value={roomName} onChange={(event) => setRoomName(event.target.value)} />
+            </label>
+            <label>
+              Type
+              <select value={roomType} onChange={(event) => setRoomType(event.target.value as RoomType)}>
+                {ROOM_TYPES.map((type) => (
+                  <option key={type} value={type}>
+                    {type.replace(/_/g, " ")}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="room-dialog-actions">
+              <button type="button" onClick={() => setPendingBoundary(null)} disabled={creatingRoom}>
+                Cancel
+              </button>
+              <button type="submit" className="primary" disabled={creatingRoom || !roomName.trim()}>
+                {creatingRoom ? "Creating…" : "Create"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       <div className="canvas-layout">
         <canvas
@@ -1149,7 +1483,8 @@ export default function LevelCanvasPage() {
       </div>
       <p className="muted hint">
         Wall tool: click to start a wall, click again to finish it (click near an existing point to
-        connect). Door/Window tool: click on a wall to add one. Select tool: drag points or
+        connect). Define room: click inside a closed wall region, then name it. Door/Window tool:
+        click on a wall to add one. Select tool: drag points or
         doors/windows to move them. Scroll to zoom (centered on cursor); hold Space, use the Pan
         tool, or middle-click drag to pan. Esc cancels the current tool/action, Delete/Backspace
         removes the selection, Ctrl/Cmd+Z undoes, Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y redoes.

@@ -101,6 +101,35 @@ docker compose down -v
 
 ---
 
+## Running tests locally
+
+Backend integration tests use Testcontainers with real PostgreSQL. Docker must
+be running and visible from the same shell that runs Maven:
+
+```powershell
+docker ps
+cd backend
+.\mvnw.cmd --batch-mode --no-transfer-progress verify
+```
+
+If Docker is not available, Maven can still compile/package the backend with:
+
+```powershell
+cd backend
+.\mvnw.cmd --batch-mode --no-transfer-progress -DskipTests package
+```
+
+Frontend checks:
+
+```powershell
+cd frontend
+npm run lint
+npm test
+npm run build
+```
+
+---
+
 ## Continuous Integration
 
 Every push and pull request targeting `main` automatically runs

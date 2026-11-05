@@ -76,6 +76,32 @@ export function emptyGeometry(): LevelGeometryResponse {
   return { levelId: mockLevel.id, nodes: [], walls: [], openings: [], rooms: [], roomWalls: [] };
 }
 
+export function mockRoomGeometry(): LevelGeometryResponse {
+  return {
+    levelId: mockLevel.id,
+    nodes: [
+      { id: "node-1", xMm: 0, yMm: 0, zMm: 0 },
+      { id: "node-2", xMm: 4000, yMm: 0, zMm: 0 },
+      { id: "node-3", xMm: 4000, yMm: 2000, zMm: 0 },
+      { id: "node-4", xMm: 0, yMm: 2000, zMm: 0 },
+    ],
+    walls: [
+      { id: "wall-1", startNodeId: "node-1", endNodeId: "node-2", thicknessMm: 150, heightMm: 2700, kind: "INTERIOR" },
+      { id: "wall-2", startNodeId: "node-2", endNodeId: "node-3", thicknessMm: 150, heightMm: 2700, kind: "INTERIOR" },
+      { id: "wall-3", startNodeId: "node-3", endNodeId: "node-4", thicknessMm: 150, heightMm: 2700, kind: "INTERIOR" },
+      { id: "wall-4", startNodeId: "node-4", endNodeId: "node-1", thicknessMm: 150, heightMm: 2700, kind: "INTERIOR" },
+    ],
+    openings: [],
+    rooms: [{ id: mockRoom.id, name: mockRoom.name, type: mockRoom.type }],
+    roomWalls: [
+      { roomId: mockRoom.id, wallId: "wall-1" },
+      { roomId: mockRoom.id, wallId: "wall-2" },
+      { roomId: mockRoom.id, wallId: "wall-3" },
+      { roomId: mockRoom.id, wallId: "wall-4" },
+    ],
+  };
+}
+
 export function mockPlacement(overrides: Partial<FurniturePlacementResponse> = {}): FurniturePlacementResponse {
   return {
     id: "placement-1",

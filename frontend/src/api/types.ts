@@ -273,6 +273,12 @@ export interface CreateRoomRequest {
   ceilingHeightMm?: number;
 }
 
+export interface CreateRoomFromBoundaryRequest {
+  name: string;
+  type: RoomType;
+  wallIds: UUID[];
+}
+
 export interface UpdateRoomRequest extends CreateRoomRequest {}
 
 export interface RoomResponse {

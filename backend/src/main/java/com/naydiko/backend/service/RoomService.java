@@ -10,6 +10,8 @@ import com.naydiko.backend.domain.repository.FurniturePlacementRepository;
 import com.naydiko.backend.domain.repository.LevelRepository;
 import com.naydiko.backend.domain.repository.ProductRepository;
 import com.naydiko.backend.domain.repository.RoomRepository;
+import com.naydiko.backend.domain.repository.WallRepository;
+import com.naydiko.backend.dto.request.CreateRoomFromBoundaryRequest;
 import com.naydiko.backend.dto.request.CreateRoomRequest;
 import com.naydiko.backend.dto.request.FurniturePlacementRequest;
 import com.naydiko.backend.dto.request.UpdateRoomRequest;
@@ -17,6 +19,7 @@ import com.naydiko.backend.dto.response.FurniturePlacementResponse;
 import com.naydiko.backend.dto.response.RoomResponse;
 import com.naydiko.backend.exception.ResourceNotFoundException;
 import com.naydiko.backend.geometry.GeometryEngine;
+import com.naydiko.backend.geometry.RoomGeometryCalculator;
 import com.naydiko.backend.geometry.model.BoundingBox2D;
 import com.naydiko.backend.geometry.model.FurnitureGeometry;
 import com.naydiko.backend.geometry.model.GeometryValidationIssue;
@@ -31,6 +34,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -59,6 +63,7 @@ public class RoomService {
     private final LevelRepository levelRepository;
     private final ProductRepository productRepository;
     private final FurniturePlacementRepository furniturePlacementRepository;
+    private final WallRepository wallRepository;
     private final GeometryEngine geometryEngine;
     private final double doorClearanceMm;
 
@@ -66,12 +71,14 @@ public class RoomService {
                         LevelRepository levelRepository,
                         ProductRepository productRepository,
                         FurniturePlacementRepository furniturePlacementRepository,
+                        WallRepository wallRepository,
                         GeometryEngine geometryEngine,
                         @Value("${app.geometry.door-clearance-mm:700}") double doorClearanceMm) {
         this.roomRepository = roomRepository;
         this.levelRepository = levelRepository;
         this.productRepository = productRepository;
         this.furniturePlacementRepository = furniturePlacementRepository;
+        this.wallRepository = wallRepository;
         this.geometryEngine = geometryEngine;
         this.doorClearanceMm = doorClearanceMm;
     }
@@ -91,6 +98,46 @@ public class RoomService {
                 .ceilingHeightMm(request.ceilingHeightMm())
                 .build();
 
+        return toResponse(roomRepository.save(room));
+    }
+
+    /**
+     * Atomically creates a room and its RoomWall associations to an existing,
+     * closed boundary on the same Level. Structural walls remain owned by the
+     * Level and may be shared by any number of rooms.
+     */
+    @Transactional
+    public RoomResponse createRoomFromBoundary(
+            UUID levelId, UUID requesterId, CreateRoomFromBoundaryRequest request) {
+        Level level = findOwnedLevelOrThrow(levelId, requesterId);
+        Set<UUID> requestedWallIds = new HashSet<>(request.wallIds());
+        if (requestedWallIds.size() != request.wallIds().size()) {
+            throw new IllegalArgumentException("Room boundary wall ids must be unique");
+        }
+
+        List<Wall> walls = wallRepository.findAllById(requestedWallIds);
+        if (walls.size() != requestedWallIds.size()) {
+            throw new ResourceNotFoundException("One or more room boundary walls were not found");
+        }
+        boolean allBelongToLevel = walls.stream().allMatch(wall ->
+                wall.getLevel().getId().equals(levelId)
+                        && wall.getStartNode().getLevel().getId().equals(levelId)
+                        && wall.getEndNode().getLevel().getId().equals(levelId));
+        if (!allBelongToLevel) {
+            throw new IllegalArgumentException("Every room boundary wall must belong to level " + levelId);
+        }
+
+        List<WallGeometry> wallGeometries = walls.stream().map(RoomService::toWallGeometry).toList();
+        if (!RoomGeometryCalculator.isClosed(new RoomBoundary(null, wallGeometries))) {
+            throw new IllegalArgumentException("Room boundary walls must form one closed loop");
+        }
+
+        Room room = Room.builder()
+                .level(level)
+                .name(request.name())
+                .type(request.type())
+                .walls(new HashSet<>(walls))
+                .build();
         return toResponse(roomRepository.save(room));
     }
 

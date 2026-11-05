@@ -205,49 +205,51 @@ public class LevelGeometryService {
         openingRepository.deleteAll(openingsToRemove);
         openingRepository.flush();
 
-        // 4. Rooms: upsert geometry-relevant fields only (name, type).
-        Map<UUID, Room> roomById = new HashMap<>();
-        for (RoomGeometryRequest rr : request.rooms()) {
-            Room room = resolveOrThrow(rr.id(), existingRooms, "Room");
-            if (room == null) {
-                room = Room.builder().level(level).name(rr.name()).type(rr.type()).build();
-            } else {
-                room.setName(rr.name());
-                room.setType(rr.type());
+        boolean managesRooms = !request.rooms().isEmpty() || !request.roomWalls().isEmpty();
+        if (managesRooms) {
+            // 4. Rooms: upsert geometry-relevant fields only (name, type).
+            Map<UUID, Room> roomById = new HashMap<>();
+            for (RoomGeometryRequest rr : request.rooms()) {
+                Room room = resolveOrThrow(rr.id(), existingRooms, "Room");
+                if (room == null) {
+                    room = Room.builder().level(level).name(rr.name()).type(rr.type()).build();
+                } else {
+                    room.setName(rr.name());
+                    room.setType(rr.type());
+                }
+                room = roomRepository.save(room);
+                roomById.put(room.getId(), room);
             }
-            room = roomRepository.save(room);
-            roomById.put(room.getId(), room);
-        }
-        roomRepository.flush();
+            roomRepository.flush();
 
-        // 5. Room-wall borders: reconcile each room's wall associations.
-        Map<UUID, Set<Wall>> wallsByRoom = new HashMap<>();
-        for (RoomWallRequest rw : request.roomWalls()) {
-            Room room = roomById.get(rw.roomId());
-            Wall wall = wallById.get(rw.wallId());
-            if (room == null || wall == null) {
-                throw new IllegalArgumentException(
-                        "Room-wall association references a room or wall that is not part of the submitted geometry for level "
-                                + levelId);
+            // 5. Room-wall borders: reconcile each room's wall associations.
+            Map<UUID, Set<Wall>> wallsByRoom = new HashMap<>();
+            for (RoomWallRequest rw : request.roomWalls()) {
+                Room room = roomById.get(rw.roomId());
+                Wall wall = wallById.get(rw.wallId());
+                if (room == null || wall == null) {
+                    throw new IllegalArgumentException(
+                            "Room-wall association references a room or wall that is not part of the submitted geometry for level "
+                                    + levelId);
+                }
+                wallsByRoom.computeIfAbsent(rw.roomId(), key -> new HashSet<>()).add(wall);
             }
-            wallsByRoom.computeIfAbsent(rw.roomId(), key -> new HashSet<>()).add(wall);
-        }
-        for (Room room : roomById.values()) {
-            room.setWalls(wallsByRoom.getOrDefault(room.getId(), new HashSet<>()));
-        }
-        roomRepository.flush();
+            for (Room room : roomById.values()) {
+                room.setWalls(wallsByRoom.getOrDefault(room.getId(), new HashSet<>()));
+            }
+            roomRepository.flush();
 
-        // Geometry Engine: room-closure is advisory only (many valid
-        // in-progress rooms are not yet fully enclosed), so we collect it as
-        // a warning rather than block the save.
-        warnings.addAll(collectRoomClosureWarnings(roomById.values()));
+            // Geometry Engine: room-closure is advisory only (many valid
+            // in-progress rooms are not yet fully enclosed), so we collect it as
+            // a warning rather than block the save.
+            warnings.addAll(collectRoomClosureWarnings(roomById.values()));
 
-        // Remove rooms that are no longer present in the submitted geometry.
-        List<Room> roomsToRemove = existingRooms.values().stream()
-                .filter(r -> !roomById.containsKey(r.getId()))
-                .toList();
-        roomRepository.deleteAll(roomsToRemove);
-        roomRepository.flush();
+            // Omitted rooms are intentionally preserved. Room entities are
+            // managed through the Rooms API, while this geometry document only
+            // updates the boundary for rooms explicitly present in the payload.
+            // Deleting a room must go through RoomService so shared structural
+            // walls are not removed just because a room stopped referencing them.
+        }
 
         // Remove walls that are no longer present in the submitted geometry.
         List<Wall> wallsToRemove = existingWalls.values().stream()

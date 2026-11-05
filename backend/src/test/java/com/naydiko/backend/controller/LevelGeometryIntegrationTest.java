@@ -1,17 +1,31 @@
 package com.naydiko.backend.controller;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.naydiko.backend.domain.entity.FurniturePlacement;
 import com.naydiko.backend.domain.entity.Level;
+import com.naydiko.backend.domain.entity.Product;
 import com.naydiko.backend.domain.entity.Project;
+import com.naydiko.backend.domain.entity.Room;
 import com.naydiko.backend.domain.entity.User;
+import com.naydiko.backend.domain.entity.Vendor;
+import com.naydiko.backend.domain.entity.Wall;
 import com.naydiko.backend.domain.enums.OpeningType;
+import com.naydiko.backend.domain.enums.ProductStatus;
 import com.naydiko.backend.domain.enums.ProjectType;
+import com.naydiko.backend.domain.enums.RoomType;
+import com.naydiko.backend.domain.enums.VendorStatus;
 import com.naydiko.backend.domain.enums.WallKind;
+import com.naydiko.backend.domain.repository.FurniturePlacementRepository;
 import com.naydiko.backend.domain.repository.LevelRepository;
+import com.naydiko.backend.domain.repository.ProductRepository;
 import com.naydiko.backend.domain.repository.ProjectRepository;
+import com.naydiko.backend.domain.repository.RoomRepository;
+import com.naydiko.backend.domain.repository.VendorRepository;
 import com.naydiko.backend.dto.request.LevelGeometryRequest;
 import com.naydiko.backend.dto.request.NodeRequest;
 import com.naydiko.backend.dto.request.OpeningRequest;
+import com.naydiko.backend.dto.request.RoomGeometryRequest;
+import com.naydiko.backend.dto.request.RoomWallRequest;
 import com.naydiko.backend.dto.request.WallRequest;
 import com.naydiko.backend.support.AbstractIntegrationTest;
 import org.junit.jupiter.api.Test;
@@ -28,6 +42,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.hasItem;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -50,6 +65,14 @@ class LevelGeometryIntegrationTest extends AbstractIntegrationTest {
     private ProjectRepository projectRepository;
     @Autowired
     private LevelRepository levelRepository;
+    @Autowired
+    private RoomRepository roomRepository;
+    @Autowired
+    private FurniturePlacementRepository furniturePlacementRepository;
+    @Autowired
+    private VendorRepository vendorRepository;
+    @Autowired
+    private ProductRepository productRepository;
 
     @Test
     void save_persistsNodesWallsAndOpeningsWithNoIssues() throws Exception {
@@ -101,6 +124,232 @@ class LevelGeometryIntegrationTest extends AbstractIntegrationTest {
         JsonNode updated = objectMapper.readTree(updatedBody);
         UUID firstWallId = UUID.fromString(saved.get("walls").get(0).get("id").asText());
         assertThat(thicknessOf(updated, firstWallId)).isEqualByComparingTo(new BigDecimal("220.00"));
+    }
+
+    @Test
+    void update_withoutRoomPayload_preservesExistingRoomAndFurniturePlacements() throws Exception {
+        User owner = createActiveUser("geometry-caller");
+        UUID levelId = createLevel(owner);
+        String token = bearer(tokenFor(owner));
+        JsonNode saved = saveRectangleWithDoor(levelId, token);
+
+        Level level = levelRepository.findById(levelId).orElseThrow();
+        Room room = roomRepository.save(Room.builder()
+                .level(level)
+                .name("Living Room")
+                .type(RoomType.LIVING_ROOM)
+                .build());
+        Product product = createProduct();
+        FurniturePlacement placement = furniturePlacementRepository.save(FurniturePlacement.builder()
+                .room(room)
+                .product(product)
+                .xMm(new BigDecimal("1000"))
+                .yMm(new BigDecimal("1200"))
+                .zMm(BigDecimal.ZERO)
+                .rotationAngle(BigDecimal.ZERO)
+                .scale(BigDecimal.ONE)
+                .locked(false)
+                .build());
+
+        List<NodeRequest> nodes = toNodeRequests(saved.get("nodes"));
+        List<WallRequest> walls = toWallRequests(saved.get("walls"), 0, new BigDecimal("220.00"));
+        List<OpeningRequest> openings = toOpeningRequests(saved.get("openings"));
+        List<RoomWallRequest> roomWalls = new ArrayList<>();
+        for (JsonNode wall : saved.get("walls")) {
+            roomWalls.add(new RoomWallRequest(room.getId(), UUID.fromString(wall.get("id").asText())));
+        }
+
+        putGeometry(levelId, token, new LevelGeometryRequest(
+                        nodes,
+                        toWallRequests(saved.get("walls"), -1, null),
+                        openings,
+                        List.of(new RoomGeometryRequest(room.getId(), room.getName(), room.getType())),
+                        roomWalls))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.roomWalls.length()").value(4));
+
+        putGeometry(levelId, token, new LevelGeometryRequest(nodes, walls, openings, List.of(), List.of()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rooms[0].id").value(room.getId().toString()))
+                .andExpect(jsonPath("$.roomWalls.length()").value(4));
+
+        assertThat(roomRepository.existsById(room.getId())).isTrue();
+        assertThat(furniturePlacementRepository.existsById(placement.getId())).isTrue();
+
+        mockMvc.perform(get("/api/rooms/{roomId}/placements", room.getId()).header("Authorization", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].id").value(placement.getId().toString()))
+                .andExpect(jsonPath("$[0].productId").value(product.getId().toString()));
+    }
+
+    @Test
+    void update_withRoomWallPayload_persistsAndReturnsRoomBoundary() throws Exception {
+        User owner = createActiveUser("geometry-caller");
+        UUID levelId = createLevel(owner);
+        String token = bearer(tokenFor(owner));
+        Level level = levelRepository.findById(levelId).orElseThrow();
+        Room room = roomRepository.save(Room.builder()
+                .level(level)
+                .name("Living Room")
+                .type(RoomType.LIVING_ROOM)
+                .build());
+
+        JsonNode withWalls = saveRectangle(levelId, token, new BigDecimal("4000"), new BigDecimal("2000"));
+        List<RoomWallRequest> roomWalls = new ArrayList<>();
+        for (JsonNode wall : withWalls.get("walls")) {
+            roomWalls.add(new RoomWallRequest(room.getId(), UUID.fromString(wall.get("id").asText())));
+        }
+
+        putGeometry(levelId, token, new LevelGeometryRequest(
+                        toNodeRequests(withWalls.get("nodes")),
+                        toWallRequests(withWalls.get("walls"), -1, null),
+                        List.of(),
+                        List.of(new RoomGeometryRequest(room.getId(), room.getName(), room.getType())),
+                        roomWalls))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.nodes.length()").value(4))
+                .andExpect(jsonPath("$.walls.length()").value(4))
+                .andExpect(jsonPath("$.rooms[0].id").value(room.getId().toString()))
+                .andExpect(jsonPath("$.roomWalls.length()").value(4));
+
+        Room reloadedRoom = roomRepository.findByLevelIdFetchingWalls(levelId).stream()
+                .filter(r -> r.getId().equals(room.getId()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(reloadedRoom.getWalls()).hasSize(4);
+
+        mockMvc.perform(get("/api/levels/{levelId}/geometry", levelId).header("Authorization", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.roomWalls.length()").value(4))
+                .andExpect(jsonPath("$.nodes[?(@.xMm == 4000)].id").exists())
+                .andExpect(jsonPath("$.nodes[?(@.yMm == 2000)].id").exists());
+    }
+
+    @Test
+    void update_roomBoundaryPayloadModifiesOnlySubmittedRoomAndPreservesSharedWalls() throws Exception {
+        User owner = createActiveUser("geometry-caller");
+        UUID levelId = createLevel(owner);
+        String token = bearer(tokenFor(owner));
+        Level level = levelRepository.findById(levelId).orElseThrow();
+        Room roomA = roomRepository.save(Room.builder()
+                .level(level)
+                .name("Room A")
+                .type(RoomType.LIVING_ROOM)
+                .build());
+        Room roomB = roomRepository.save(Room.builder()
+                .level(level)
+                .name("Room B")
+                .type(RoomType.BEDROOM)
+                .build());
+        JsonNode withWalls = saveRectangle(levelId, token, new BigDecimal("4000"), new BigDecimal("2000"));
+        List<UUID> wallIds = wallIds(withWalls);
+
+        putGeometry(levelId, token, new LevelGeometryRequest(
+                        toNodeRequests(withWalls.get("nodes")),
+                        toWallRequests(withWalls.get("walls"), -1, null),
+                        List.of(),
+                        List.of(new RoomGeometryRequest(roomA.getId(), roomA.getName(), roomA.getType())),
+                        List.of(
+                                new RoomWallRequest(roomA.getId(), wallIds.get(0)),
+                                new RoomWallRequest(roomA.getId(), wallIds.get(1)))))
+                .andExpect(status().isOk());
+
+        putGeometry(levelId, token, new LevelGeometryRequest(
+                        toNodeRequests(withWalls.get("nodes")),
+                        toWallRequests(withWalls.get("walls"), -1, null),
+                        List.of(),
+                        List.of(new RoomGeometryRequest(roomB.getId(), roomB.getName(), roomB.getType())),
+                        List.of(
+                                new RoomWallRequest(roomB.getId(), wallIds.get(1)),
+                                new RoomWallRequest(roomB.getId(), wallIds.get(2)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.roomWalls.length()").value(4));
+
+        putGeometry(levelId, token, new LevelGeometryRequest(
+                        toNodeRequests(withWalls.get("nodes")),
+                        toWallRequests(withWalls.get("walls"), -1, null),
+                        List.of(),
+                        List.of(new RoomGeometryRequest(roomA.getId(), roomA.getName(), roomA.getType())),
+                        List.of(
+                                new RoomWallRequest(roomA.getId(), wallIds.get(0)),
+                                new RoomWallRequest(roomA.getId(), wallIds.get(1)),
+                                new RoomWallRequest(roomA.getId(), wallIds.get(3)))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rooms.length()").value(2))
+                .andExpect(jsonPath("$.roomWalls.length()").value(5));
+
+        List<Room> rooms = roomRepository.findByLevelIdFetchingWalls(levelId);
+        Room reloadedA = rooms.stream().filter(room -> room.getId().equals(roomA.getId())).findFirst().orElseThrow();
+        Room reloadedB = rooms.stream().filter(room -> room.getId().equals(roomB.getId())).findFirst().orElseThrow();
+
+        assertThat(reloadedA.getWalls()).extracting(Wall::getId)
+                .containsExactlyInAnyOrder(wallIds.get(0), wallIds.get(1), wallIds.get(3));
+        assertThat(reloadedB.getWalls()).extracting(Wall::getId)
+                .containsExactlyInAnyOrder(wallIds.get(1), wallIds.get(2));
+        assertThat(reloadedA.getWalls()).extracting(Wall::getId).contains(wallIds.get(1));
+        assertThat(reloadedB.getWalls()).extracting(Wall::getId).contains(wallIds.get(1));
+    }
+
+    @Test
+    void createdRoomBoundarySave_roundTripsRoomWallsAndPreservesOtherRoomsAndFurniture() throws Exception {
+        User owner = createActiveUser("geometry-caller");
+        UUID levelId = createLevel(owner);
+        String token = bearer(tokenFor(owner));
+        UUID roomAId = createRoomViaApi(levelId, "Room A", RoomType.LIVING_ROOM, token);
+        Level level = levelRepository.findById(levelId).orElseThrow();
+        Room roomB = roomRepository.save(Room.builder()
+                .level(level)
+                .name("Room B")
+                .type(RoomType.BEDROOM)
+                .build());
+        Product product = createProduct();
+        FurniturePlacement placement = furniturePlacementRepository.save(FurniturePlacement.builder()
+                .room(roomB)
+                .product(product)
+                .xMm(new BigDecimal("1000"))
+                .yMm(new BigDecimal("1000"))
+                .zMm(BigDecimal.ZERO)
+                .rotationAngle(BigDecimal.ZERO)
+                .scale(BigDecimal.ONE)
+                .locked(false)
+                .build());
+
+        JsonNode withWalls = saveRectangle(levelId, token, new BigDecimal("4000"), new BigDecimal("2000"));
+        List<UUID> wallIds = wallIds(withWalls);
+        List<RoomWallRequest> roomAWalls = wallIds.stream()
+                .map(wallId -> new RoomWallRequest(roomAId, wallId))
+                .toList();
+
+        putGeometry(levelId, token, new LevelGeometryRequest(
+                        toNodeRequests(withWalls.get("nodes")),
+                        toWallRequests(withWalls.get("walls"), -1, null),
+                        List.of(),
+                        List.of(new RoomGeometryRequest(roomAId, "Room A", RoomType.LIVING_ROOM)),
+                        roomAWalls))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rooms.length()").value(2))
+                .andExpect(jsonPath("$.roomWalls.length()").value(4));
+
+        String reloadedBody = mockMvc.perform(get("/api/levels/{levelId}/geometry", levelId).header("Authorization", token))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        JsonNode reloaded = objectMapper.readTree(reloadedBody);
+        List<UUID> reloadedRoomAWallIds = new ArrayList<>();
+        for (JsonNode roomWall : reloaded.get("roomWalls")) {
+            if (roomWall.get("roomId").asText().equals(roomAId.toString())) {
+                reloadedRoomAWallIds.add(UUID.fromString(roomWall.get("wallId").asText()));
+            }
+        }
+
+        assertThat(reloadedRoomAWallIds).containsExactlyInAnyOrderElementsOf(wallIds);
+        assertThat(roomRepository.existsById(roomB.getId())).isTrue();
+        assertThat(furniturePlacementRepository.existsById(placement.getId())).isTrue();
+        Room reloadedRoomB = roomRepository.findByLevelIdFetchingWalls(levelId).stream()
+                .filter(room -> room.getId().equals(roomB.getId()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(reloadedRoomB.getWalls()).isEmpty();
     }
 
     @Test
@@ -222,6 +471,22 @@ class LevelGeometryIntegrationTest extends AbstractIntegrationTest {
         return level.getId();
     }
 
+    private Product createProduct() {
+        Vendor vendor = vendorRepository.save(Vendor.builder()
+                .name("Geometry Test Vendor " + UUID.randomUUID())
+                .status(VendorStatus.ACTIVE)
+                .build());
+        return productRepository.save(Product.builder()
+                .vendor(vendor)
+                .name("Test Sofa")
+                .category("Sofa")
+                .widthMm(new BigDecimal("1800.00"))
+                .depthMm(new BigDecimal("800.00"))
+                .heightMm(new BigDecimal("850.00"))
+                .status(ProductStatus.ACTIVE)
+                .build());
+    }
+
     private ResultActions putGeometry(UUID levelId, String token, LevelGeometryRequest request) throws Exception {
         return mockMvc.perform(put("/api/levels/{levelId}/geometry", levelId)
                 .header("Authorization", token)
@@ -229,13 +494,28 @@ class LevelGeometryIntegrationTest extends AbstractIntegrationTest {
                 .content(objectMapper.writeValueAsString(request)));
     }
 
+    private UUID createRoomViaApi(UUID levelId, String name, RoomType type, String token) throws Exception {
+        String body = mockMvc.perform(post("/api/levels/{levelId}/rooms", levelId)
+                        .header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new com.naydiko.backend.dto.request.CreateRoomRequest(
+                                name, type, null, null, null, null, null))))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        return UUID.fromString(objectMapper.readTree(body).get("id").asText());
+    }
+
     /** Saves a plain 4000x3000mm rectangular room boundary (no openings), two-phase. */
     private JsonNode saveRectangle(UUID levelId, String token) throws Exception {
+        return saveRectangle(levelId, token, new BigDecimal("4000"), new BigDecimal("3000"));
+    }
+
+    private JsonNode saveRectangle(UUID levelId, String token, BigDecimal widthMm, BigDecimal depthMm) throws Exception {
         List<NodeRequest> nodeRequests = List.of(
                 new NodeRequest(null, new BigDecimal("0"), new BigDecimal("0"), BigDecimal.ZERO),
-                new NodeRequest(null, new BigDecimal("4000"), new BigDecimal("0"), BigDecimal.ZERO),
-                new NodeRequest(null, new BigDecimal("4000"), new BigDecimal("3000"), BigDecimal.ZERO),
-                new NodeRequest(null, new BigDecimal("0"), new BigDecimal("3000"), BigDecimal.ZERO));
+                new NodeRequest(null, widthMm, new BigDecimal("0"), BigDecimal.ZERO),
+                new NodeRequest(null, widthMm, depthMm, BigDecimal.ZERO),
+                new NodeRequest(null, new BigDecimal("0"), depthMm, BigDecimal.ZERO));
         MvcResult phase1 = putGeometry(levelId, token,
                         new LevelGeometryRequest(nodeRequests, List.of(), List.of(), List.of(), List.of()))
                 .andExpect(status().isOk())
@@ -321,6 +601,14 @@ class LevelGeometryIntegrationTest extends AbstractIntegrationTest {
                     new BigDecimal(o.get("widthMm").asText()),
                     new BigDecimal(o.get("heightMm").asText()),
                     null, null, null));
+        }
+        return result;
+    }
+
+    private List<UUID> wallIds(JsonNode geometryResponse) {
+        List<UUID> result = new ArrayList<>();
+        for (JsonNode wall : geometryResponse.get("walls")) {
+            result.add(UUID.fromString(wall.get("id").asText()));
         }
         return result;
     }
