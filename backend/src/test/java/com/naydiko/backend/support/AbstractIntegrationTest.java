@@ -9,13 +9,18 @@ import com.naydiko.backend.domain.repository.PasswordResetTokenRepository;
 import com.naydiko.backend.domain.repository.UserRepository;
 import com.naydiko.backend.security.CustomUserDetails;
 import com.naydiko.backend.security.JwtService;
+import io.jsonwebtoken.Jwts;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.testcontainers.containers.PostgreSQLContainer;
+
+import java.util.Base64;
 
 /**
  * Base class for Stage 1 Spring Boot integration tests.
@@ -49,6 +54,15 @@ import org.testcontainers.containers.PostgreSQLContainer;
 @SpringBootTest
 @AutoConfigureMockMvc
 public abstract class AbstractIntegrationTest {
+
+    // Each test JVM gets its own key; builds never depend on a developer's JWT_SECRET.
+    private static final String TEST_JWT_SECRET = Base64.getEncoder()
+            .encodeToString(Jwts.SIG.HS256.key().build().getEncoded());
+
+    @DynamicPropertySource
+    static void jwtProperties(DynamicPropertyRegistry registry) {
+        registry.add("app.jwt.secret", () -> TEST_JWT_SECRET);
+    }
 
     @ServiceConnection
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16")
