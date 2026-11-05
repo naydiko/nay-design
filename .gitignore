@@ -1,8 +1,8 @@
 # Environment files (real secrets/config) — never commit these.
-.env
-.env.local
-.env.*.local
-!.env.example
+**/.env
+**/.env.local
+**/.env.*.local
+!**/.env.example
 
 # IDE
 .idea/
