@@ -4,7 +4,7 @@ services:
     container_name: udesign-postgres
 
     environment:
-      POSTGRES_DB: udesign
+      POSTGRES_DB: naydesign
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       TZ: UTC

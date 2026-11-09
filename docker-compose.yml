@@ -5,7 +5,7 @@ services:
     image: postgres:16
     container_name: naydiko-postgres
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-udesign}
+      POSTGRES_DB: ${POSTGRES_DB:-naydesign}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       TZ: UTC
@@ -16,7 +16,7 @@ services:
     volumes:
       - naydiko-postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-udesign}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-naydesign}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -30,7 +30,7 @@ services:
     container_name: naydiko-backend
     environment:
       SPRING_PROFILES_ACTIVE: docker
-      POSTGRES_DB: ${POSTGRES_DB:-udesign}
+      POSTGRES_DB: ${POSTGRES_DB:-naydesign}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env}
